@@ -27,6 +27,13 @@ npm test
 ```
 At most 2,000 events over 14 days from 150 accounts, plus `accounts.json`: what the app knows about each customer before the stream starts. Six attack and trap scenarios are planted in normal traffic: credential stuffing, a support-desk reset, card testing, a fraud ring, a repeat attacker, and an innocent traveler. Benign look-alikes (decoys) make sure no single field value gives an attack away. Ground truth is in `labels.json`, never in the events the agents see.
 
+## Run the agents
+```bash
+npm run replay -- --seed 42 --meko off   # replays the stream through the four agents → runs/<run id>.json
+npm run knowledge                        # regenerates knowledge/risk-rules.md after a rule changes
+```
+OFF mode needs no account and makes no network calls. ON mode, with shared Meko memory, arrives in milestone M2.
+
 ## Results: Meko ON vs OFF
 Held-out seeds 101–105; definitions in the [PRD](docs/prd.md#8-evaluation).
 

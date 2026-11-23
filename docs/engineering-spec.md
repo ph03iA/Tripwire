@@ -149,7 +149,8 @@ Impossible travel compares successful activity only: failed attempts come from r
 ## 5. Runner (R1, R4, R6)
 
 ```ts
-replay({ seed, meko: "off" }): Promise<RunRecord>
+replay(seed): Promise<RunRecord>                                  // OFF mode; ON arrives in M2
+replayStream({ seed, events, accounts }): Promise<RunRecord>      // the same loop on any input, used by tests
 ```
 
 1. `generate(seed)` builds the events, labels and profiles in process. The runner never parses the committed files, so there is no file trust boundary to validate.
@@ -166,7 +167,11 @@ replay({ seed, meko: "off" }): Promise<RunRecord>
    ```
    `runId` = `<seed>-<mode>-<ISO time>`. Records go to `runs/<runId>.json` (git-ignored; demo runs get committed in M6).
 
-**Failure policy:** any agent or store error stops the run. A record with `status: "failed"` and the error is still written. A run never silently falls back from ON to OFF, because that would corrupt the comparison.
+**Failure policy:**
+- **Input is validated before anything is scored.** Timestamps must parse and never go backwards; equal times keep their input order. Every account needs a profile.
+- **Results are published only after the event is stored.** An event's findings and signals are staged, the event is stored, and only then do they reach the record and the signal store. A failed insert therefore leaves nothing from that event behind.
+- **Any error stops the run.** That includes opening or closing the store. A record with `status: "failed"` and the first error is still written.
+- **No silent fallback.** A run never falls back from ON to OFF, because that would corrupt the comparison.
 
 `--meko on` fails with a clear message until the Meko client lands (M0/M2).
 
