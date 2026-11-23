@@ -6,7 +6,7 @@ import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamable
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { mekoConfig, USER_AGENT } from "../config.js";
-import { mcpOver } from "./mcp.js";
+import { connectMcp, mcpOver } from "./mcp.js";
 import { restClient } from "./rest.js";
 import { classify, MekoError, UnknownOutcomeError, withRetry } from "./retry.js";
 
@@ -48,10 +48,12 @@ test("retries follow the operation: reads retry, writes that could duplicate are
   assert.deepEqual(waits, [1000], "honors Retry-After");
   assert.equal(classify(new StreamableHTTPError(502, "bad gateway")), "transient");
   assert.equal(classify(new StreamableHTTPError(403, "forbidden")), "permanent");
-  assert.equal(classify(new Error("something else")), "permanent");
+  assert.equal(classify(new StreamableHTTPError(-1, "Unexpected content type: text/html")), "transient", "a success that can't be read");
+  assert.equal(classify(new MekoError("refused: datapack_id_required")), "permanent", "the tool's own answer");
+  assert.equal(classify(new Error("something else")), "transient", "only a clear refusal is permanent");
 });
 
-test("REST: sends the key and User-Agent, unwraps { data }, turns { error } into a MekoError, retries per operation", async () => {
+test("REST: sends the key and User-Agent only to the API, unwraps { data }, turns { error } into a MekoError, retries per operation", async () => {
   const seen: { auth?: string; ua?: string; url?: string }[] = [];
   let flakyFailures = 1;
   const server = createServer((req, res) => {
@@ -60,6 +62,7 @@ test("REST: sends the key and User-Agent, unwraps { data }, turns { error } into
     if (req.url?.startsWith("/api/v1/flaky") && flakyFailures-- > 0) return void json(503, {});
     if (req.url?.startsWith("/api/v1/bad")) return void json(400, { data: null, error: { code: "VALIDATION_ERROR", message: "name is required" } });
     if (req.url?.startsWith("/api/v1/html")) return void res.writeHead(403, { "Content-Type": "text/html" }).end("<html>Forbidden</html>");
+    if (req.url?.startsWith("/api/v1/garbled")) return void res.writeHead(200, { "Content-Type": "text/html" }).end("<html>OK</html>");
     json(200, { data: { ok: true } });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -73,7 +76,14 @@ test("REST: sends the key and User-Agent, unwraps { data }, turns { error } into
     await assert.rejects(rest.request("GET", "html", "read"), (e: MekoError) => e.status === 403 && /Forbidden/.test(e.message));
     flakyFailures = 1;
     await assert.rejects(rest.request("POST", "flaky", "write-once", {}), UnknownOutcomeError);
+    await assert.rejects(rest.request("POST", "garbled", "write-once", {}), UnknownOutcomeError, "a 200 that can't be read may have been applied");
     assert.equal(rest.calls.get("GET /datapacks"), 1);
+
+    const sent = seen.length;
+    for (const path of ["https://storage.example.com/upload?sig=secret", "///storage.example.com/upload", "../upload"]) {
+      await assert.rejects(rest.request("POST", path, "write-once", {}), (e: Error) => /outside/.test(e.message) && !e.message.includes("secret"));
+    }
+    assert.equal(seen.length, sent, "nothing outside the API was sent, with or without the key");
   } finally {
     server.close();
   }
@@ -97,5 +107,45 @@ test("MCP: parses JSON answers, keeps plain text, raises tool errors and in-band
     assert.equal(mcp.calls.get("memory_add"), 1);
   } finally {
     await mcp.close();
+  }
+});
+
+type Reply = { status: number; headers?: Record<string, string>; body?: string };
+const rpc = (id: number, result: unknown): Reply => ({ status: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id, result }) });
+
+/** A Streamable HTTP endpoint just big enough for the SDK client: it initializes, then each tool call takes the next reply. */
+async function httpMcp(replies: ((id: number) => Reply)[]) {
+  const auth = new Set<string | undefined>();
+  const server = createServer(async (req, res) => {
+    auth.add(req.headers.authorization);
+    if (req.method !== "POST") return void res.writeHead(405).end(); // no standalone event stream
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    const { id, method, params } = JSON.parse(raw);
+    if (id === undefined) return void res.writeHead(202).end(); // a notification
+    const hello = { protocolVersion: params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "fake-meko", version: "1.0.0" } };
+    const reply = method === "initialize" ? rpc(id, hello) : replies.shift()!(id);
+    res.writeHead(reply.status, reply.headers).end(reply.body);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { url: new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`), auth, close: () => server.close() };
+}
+
+test("MCP over HTTP: sends the key, waits as long as a 429 asks, and treats an unreadable success on a write as an unknown outcome", async () => {
+  const limited = (): Reply => ({ status: 429, headers: { "Retry-After": "60" } });
+  const results = (id: number) => rpc(id, { content: [{ type: "text", text: JSON.stringify({ results: [] }) }] });
+  const html = (): Reply => ({ status: 200, headers: { "Content-Type": "text/html" }, body: "<html>maintenance</html>" });
+  const fake = await httpMcp([limited, limited, results, html]);
+  const waits: number[] = [];
+  const mcp = await connectMcp({ ...mekoConfig(env()), mcpUrl: fake.url }, async (ms) => void waits.push(ms));
+  try {
+    assert.deepEqual(await mcp.call("memory_search", { query: "x" }, "read"), { results: [] });
+    assert.deepEqual(waits, [60_000, 60_000], "the SDK drops Retry-After, so the client reads it first");
+    await assert.rejects(mcp.call("memory_add", { text: "x" }, "write-once"), UnknownOutcomeError);
+    assert.equal(mcp.calls.get("memory_add"), 1, "never resent");
+    assert.deepEqual([...fake.auth], [`Bearer ${KEY}`]);
+  } finally {
+    await mcp.close();
+    fake.close();
   }
 });

@@ -4,9 +4,10 @@ import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 /**
  * How a call may be retried (engineering spec §6):
  * - `read`: searches, gets, lists, status
- * - `idempotent`: writes that are safe to repeat (artifact_put by content hash, datapack create)
- * - `write-once`: writes that could duplicate if resent (memory_add, conversation writes, promotion). They retry
- *   only when Meko refused them (429); after a 5xx, timeout or network error the outcome is unknown.
+ * - `idempotent`: writes that are safe to repeat (artifact_put by content hash, datapack create, conversation writes
+ *   with a `seed` or `session_id`)
+ * - `write-once`: writes that could duplicate if resent (memory_add, promotion). They retry only when Meko refused
+ *   them (429); after anything short of a clear refusal the outcome is unknown.
  */
 export type Op = "read" | "idempotent" | "write-once";
 
@@ -47,17 +48,26 @@ export async function withRetry<T>(what: string, op: Op, attempt: () => Promise<
   }
 }
 
+/**
+ * `permanent` only when Meko clearly refused: a 4xx other than 429, a JSON-RPC error, or a tool that answered with an
+ * error. Anything else (a 5xx, a timeout, a dropped connection, a success that can't be read) may have been applied.
+ */
 export function classify(err: unknown): Failure {
-  const status = err instanceof MekoError ? err.status : err instanceof StreamableHTTPError ? err.code : undefined;
+  const status = statusOf(err);
   if (status === 429) return "rate-limited";
-  if (status !== undefined) return status >= 500 ? "transient" : "permanent";
-  if (err instanceof StreamableHTTPError) return "transient"; // no status: the connection itself failed
+  if (status !== undefined) return status >= 400 && status < 500 ? "permanent" : "transient";
   if (err instanceof McpError) return TRANSIENT_MCP.has(err.code) ? "transient" : "permanent";
-  return isNetworkError(err) ? "transient" : "permanent";
+  return err instanceof MekoError ? "permanent" : "transient"; // a MekoError without a status is the tool's own answer
 }
 
-const isNetworkError = (err: unknown) =>
-  err instanceof TypeError || (err instanceof DOMException && (err.name === "TimeoutError" || err.name === "AbortError"));
+/** The HTTP status behind an error, if any: the SDK's StreamableHTTPError calls it `code` (-1 for an unreadable answer). */
+const statusOf = (err: unknown) => (err instanceof MekoError ? err.status : err instanceof StreamableHTTPError ? err.code : undefined);
+
+/** The wait a response asks for in its Retry-After header (seconds), if any. */
+export function retryAfterMs(res: Response): number | undefined {
+  const seconds = Number(res.headers.get("retry-after"));
+  return seconds > 0 ? seconds * 1000 : undefined;
+}
 
 /** Retry-After when Meko sent one (capped at a minute), else 0.5 s, 1 s, 2 s… with jitter. */
 function delayMs(tries: number, err: unknown): number {

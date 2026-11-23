@@ -3,7 +3,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { MekoConfig } from "../config.js";
-import { MekoError, type Op, type Wait, withRetry } from "./retry.js";
+import { MekoError, type Op, retryAfterMs, type Wait, withRetry } from "./retry.js";
 
 const TIMEOUT_MS = 10_000;
 
@@ -18,7 +18,15 @@ export type Mcp = {
 
 export function connectMcp(cfg: MekoConfig, wait?: Wait): Promise<Mcp> {
   const headers = { Authorization: `Bearer ${cfg.apiKey}`, "User-Agent": cfg.userAgent };
-  return mcpOver(new StreamableHTTPClientTransport(cfg.mcpUrl, { requestInit: { headers } }), wait);
+  return mcpOver(new StreamableHTTPClientTransport(cfg.mcpUrl, { requestInit: { headers }, fetch: raiseRateLimit }), wait);
+}
+
+/** The SDK drops a 429's headers, so the 429 is raised here, before the SDK sees it, with the wait Meko asked for. */
+async function raiseRateLimit(url: string | URL, init?: RequestInit): Promise<Response> {
+  const res = await fetch(url, init);
+  if (res.status !== 429) return res;
+  await res.body?.cancel();
+  throw new MekoError("Meko MCP: rate limited (HTTP 429)", 429, retryAfterMs(res));
 }
 
 /** The client over any transport; tests use an in-memory one. */

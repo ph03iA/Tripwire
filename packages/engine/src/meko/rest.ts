@@ -1,5 +1,5 @@
 import type { MekoConfig } from "../config.js";
-import { MekoError, type Op, type Wait, withRetry } from "./retry.js";
+import { MekoError, type Op, retryAfterMs, type Wait, withRetry } from "./retry.js";
 
 const TIMEOUT_MS = 10_000;
 type Method = "GET" | "POST" | "PATCH" | "DELETE";
@@ -18,11 +18,14 @@ export function restClient(cfg: MekoConfig, { fetch: send = fetch, wait }: { fet
   const calls = new Map<string, number>();
   return {
     calls,
-    request: (method, path, op, body) => {
+    request: async (method, path, op, body) => {
+      const url = new URL(path.replace(/^\//, ""), base);
+      // The key goes only to Meko's API: a URL outside it (a signed storage URL, say) needs its own request without it.
+      if (!url.href.startsWith(base)) throw new Error(`${method} ${url.origin}: outside ${base}, so it isn't sent with the Meko key`);
       const what = `${method} /${path.replace(/^\//, "").split(/[/?]/)[0]}`;
       return withRetry(what, op, async () => {
         calls.set(what, (calls.get(what) ?? 0) + 1);
-        const res = await send(new URL(path.replace(/^\//, ""), base), {
+        const res = await send(url, {
           method,
           signal: AbortSignal.timeout(TIMEOUT_MS),
           headers: body === undefined ? headers : { ...headers, "Content-Type": "application/json" },
@@ -51,9 +54,4 @@ function parseJson(text: string): unknown {
   } catch {
     return undefined;
   }
-}
-
-function retryAfterMs(res: Response): number | undefined {
-  const seconds = Number(res.headers.get("retry-after"));
-  return seconds > 0 ? seconds * 1000 : undefined;
 }
