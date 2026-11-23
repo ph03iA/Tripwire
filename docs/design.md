@@ -99,8 +99,10 @@ type Label = {
 ```
 
 ```ts
+// Built in packages/engine/src/types.ts; pattern_match and patternId arrive with pattern recall (M3).
 type RiskSignal = {
   agent: "login" | "device" | "txn" | "support";
+  ruleId: string;         // "device.shared": which rule fired
   accountId: string; eventId: string; ts: string;
   type:
     | "credential_stuffing" | "failures_then_success" | "impossible_travel" | "login_after_support_reset" // login

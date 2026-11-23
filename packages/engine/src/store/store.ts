@@ -33,7 +33,7 @@ export type History = {
   resetSince(accountId: string, since: string, channel?: "support"): Promise<boolean>;
   deviceSeenOnAccount(accountId: string, deviceId: string): Promise<boolean>;
   otherAccountsOnDevice(deviceId: string, accountId: string, since: string): Promise<number>;
-  smallCharges(accountId: string, since: string): Promise<{ count: number; merchants: number }>;
+  smallCharges(accountId: string, since: string): Promise<{ count: number; merchants: string[] }>;
   medianAmount(accountId: string): Promise<{ median: number | null; count: number }>;
 };
 
@@ -74,7 +74,7 @@ export async function openStore(): Promise<EventStore> {
       [deviceId, accountId, since])).n,
 
     smallCharges: (accountId, since) => one(
-      `select count(*)::int as count, count(distinct merchant_id)::int as merchants from events
+      `select count(*)::int as count, coalesce(array_agg(distinct merchant_id), '{}') as merchants from events
          where account_id = $1 and type = 'card_charge' and amount_minor < 5000 and ts >= $2`, [accountId, since]),
 
     medianAmount: (accountId) => one(

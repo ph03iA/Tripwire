@@ -37,7 +37,8 @@ test("history queries answer from inserted events only", async () => {
     assert.equal(await store.deviceSeenOnAccount("acc_1", "dev_b"), false);
     assert.equal(await store.otherAccountsOnDevice("dev_a", "acc_1", at(0)), 1);
     assert.equal(await store.otherAccountsOnDevice("dev_a", "acc_2", at(0)), 1);
-    assert.deepEqual(await store.smallCharges("acc_1", at(0)), { count: 2, merchants: 2 });
+    assert.deepEqual(await store.smallCharges("acc_1", at(0)), { count: 2, merchants: ["m1", "m2"] });
+    assert.deepEqual(await store.smallCharges("acc_9", at(0)), { count: 0, merchants: [] });
     assert.deepEqual(await store.medianAmount("acc_1"), { median: 900, count: 3 });
     assert.deepEqual(await store.medianAmount("acc_9"), { median: null, count: 0 });
   } finally {

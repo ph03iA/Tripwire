@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "generate": "tsx src/generator/index.ts",
+    "knowledge": "tsx src/knowledge/index.ts",
     "test": "tsx --test \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"
   },
