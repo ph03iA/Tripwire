@@ -1,0 +1,24 @@
+import js from "@eslint/js";
+import { defineConfig } from "eslint/config";
+import tseslint from "typescript-eslint";
+
+export default defineConfig(
+  { ignores: ["**/node_modules/**", "data/**", "runs/**", "handoff/**", "**/dist/**"] },
+  js.configs.recommended,
+  tseslint.configs.recommended,
+  {
+    rules: {
+      // AGENTS.md: 11+ must be refactored, so anything over 10 fails the build.
+      complexity: ["error", 10],
+    },
+  },
+  {
+    // PRD R3: agents never see ground truth, so they can't reach the generator, runner or metrics.
+    files: ["packages/engine/src/agents/**"],
+    rules: {
+      "no-restricted-imports": ["error", {
+        patterns: [{ group: ["**/generator/**", "**/runner/**", "**/metrics*"], message: "Agents must not see labels (PRD R3)." }],
+      }],
+    },
+  },
+);

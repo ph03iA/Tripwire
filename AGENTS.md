@@ -30,6 +30,7 @@ npm install
 npm run generate     # seeded synthetic stream → data/
 npm test
 npm run typecheck
+npm run lint         # ESLint; fails on any function with cyclomatic complexity over 10
 ```
 
 ## Code

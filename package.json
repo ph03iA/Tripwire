@@ -1,12 +1,21 @@
 {
   "name": "tripwire",
   "private": true,
+  "engines": {
+    "node": ">=22"
+  },
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
     "generate": "npm run generate -w @tripwire/engine --",
     "test": "npm test -w @tripwire/engine",
-    "typecheck": "npm run typecheck -w @tripwire/engine"
+    "typecheck": "npm run typecheck -w @tripwire/engine",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.15.0",
+    "typescript-eslint": "^8.73.0"
   }
 }

@@ -269,7 +269,7 @@ The judges weight Meko use at 30% and ask for every part of it. Each row below i
 | Security | The Meko key lives in `.env` on the server side only. The static demo has no keys. All data is synthetic. |
 | Speed | A fast-mode run finishes in under 10 minutes |
 | Accessibility | Keyboard navigation, colorblind-safe risk colors that also carry text labels, WCAG AA contrast |
-| Platforms | Windows, macOS, Linux; Node 20.18 or newer |
+| Platforms | Windows, macOS, Linux; Node 22 or newer (Node 20 reached end of life in April 2026) |
 
 ## 10. Assumptions and constraints
 
