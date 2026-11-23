@@ -61,7 +61,8 @@ export function toSignals(agent: AgentName, e: TripwireEvent, findings: Finding[
     .map((f) => ({ agent, ruleId: f.ruleId, type: f.type, score: f.score, accountId: e.accountId, eventId: e.id, ts: e.ts, entities, evidence: f.evidence }));
 }
 
-function entitiesOf(e: TripwireEvent): RiskSignal["entities"] {
+/** The entities an event names, which signals carry and recall searches by. */
+export function entitiesOf(e: TripwireEvent): RiskSignal["entities"] {
   if (e.kind === "transaction") return { ip: e.ip, deviceId: e.deviceId, payeeId: e.payeeId, merchantId: e.merchantId };
   return "deviceId" in e ? { ip: e.ip, deviceId: e.deviceId } : {};
 }

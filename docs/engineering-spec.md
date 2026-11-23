@@ -149,7 +149,8 @@ Impossible travel compares successful activity only: failed attempts come from r
 ## 5. Runner (R1, R4, R6)
 
 ```ts
-replay({ seed, meko: "off" }): Promise<RunRecord>
+replay(seed): Promise<RunRecord>                                  // OFF mode; ON arrives in M2
+replayStream({ seed, events, accounts }): Promise<RunRecord>      // the same loop on any input, used by tests
 ```
 
 1. `generate(seed)` builds the events, labels and profiles in process. The runner never parses the committed files, so there is no file trust boundary to validate.

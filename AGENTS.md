@@ -28,6 +28,8 @@ For background only, `handoff/claude-session.md` holds the original planning con
 ```bash
 npm install
 npm run generate     # seeded synthetic stream → data/
+npm run replay -- --seed 42 --meko off   # detection agents over the stream → runs/
+npm run knowledge    # regenerate knowledge/risk-rules.md after changing a rule
 npm test
 npm run typecheck
 npm run lint         # ESLint; fails on any function with cyclomatic complexity over 10
