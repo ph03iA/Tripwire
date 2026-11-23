@@ -6,6 +6,7 @@
     "generate": "tsx src/generator/index.ts",
     "knowledge": "tsx src/knowledge/index.ts",
     "replay": "tsx src/runner/cli.ts",
+    "spike": "tsx src/meko/spike.ts",
     "test": "tsx --test \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"
   },
@@ -15,6 +16,7 @@
     "typescript": "^6.0.3"
   },
   "dependencies": {
-    "@electric-sql/pglite": "^0.6.0"
+    "@electric-sql/pglite": "^0.6.0",
+    "@modelcontextprotocol/sdk": "^1.32.2"
   }
 }
