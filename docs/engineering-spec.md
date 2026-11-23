@@ -45,8 +45,8 @@ packages/engine/src/
   runner/cli.ts            npm run replay
   ── later milestones ──
   config.ts                env parsing and validation (M0, with the Meko client)
-  log.ts                   JSON-lines logger to stderr (M0)
-  meko/mcp.ts rest.ts      Meko client (M0)
+  meko/mcp.ts rest.ts      Meko client (M0); retry.ts holds the retry policy, spike.ts the week-1 checks
+  log.ts                   JSON-lines logger to stderr (M2, with the ON runner)
   signals/meko.ts          ON mode signal store (M2)
   agents/decision.ts       decision agent (M2)
   runner/outcomes.ts       stops, step-ups, prevention (M2)
@@ -183,10 +183,10 @@ These are fixed now so that earlier code doesn't box them in; each lands in its 
   - `MEKO_API_KEY`: required for ON mode
   - `MEKO_MCP_URL`, default `https://mcp.mekodata.ai/mcp`
   - `MEKO_API_URL`, default `https://api.mekodata.ai/api/v1`
-  - `MEKO_SIGNALS_DATAPACK`, `MEKO_PATTERNS_DATAPACK`: datapack IDs
-  - `TRIPWIRE_LOG_LEVEL`, default `info`
 
-  A missing or malformed value fails at startup with a message naming the variable. The key is never logged.
+  A missing or malformed value fails at startup with a message naming the variable, never its value. Both URLs must be https. The key is never logged.
+
+  The working datapacks have fixed names (`tripwire-signals`, `tripwire-patterns`) and are looked up by name with `GET /datapacks`, so no datapack IDs need configuring. `TRIPWIRE_LOG_LEVEL` comes with `log.ts` in M2, when the ON runner first has something to log.
 - **Meko client (M0):**
   - MCP through `@modelcontextprotocol/sdk` (`StreamableHTTPClientTransport`). REST through `fetch`.
   - Both send `Authorization: Bearer` and `User-Agent: tripwire/<version>`, with a 10 s timeout.
@@ -200,8 +200,8 @@ These are fixed now so that earlier code doesn't box them in; each lands in its 
     | `POST /promote-memories` | Retry | Check the promoted list for the ID first; promote again only if it's absent |
     | `conversation_add_message`, `conversation_create` | Retry | No way to check, so mark the run `incomplete` with the event ID. Never resend blindly. |
 
-    Retries use 3 attempts with exponential backoff and jitter (0.5 s → 4 s) and honor `Retry-After`. Other 4xx responses fail at once.
-  - Every response is checked by a type guard before use. An unexpected shape is an error, not a guess.
+    Retries use 3 attempts with exponential backoff and jitter (0.5 s → 4 s) and honor `Retry-After`. Other 4xx responses fail at once. `meko/retry.ts` holds the policy: callers name the operation (`read`, `idempotent`, `write-once`), and a `write-once` call whose outcome is unknown throws `UnknownOutcomeError` instead of being resent.
+  - Every response is checked by a type guard before use. An unexpected shape is an error, not a guess. So is an answer that carries `error`: Meko reports some failures inside a successful answer, such as `{"error": "conversation_id_required"}`.
   - Every call is counted for the quota ledger (R7).
 - **ON signal store (M2):** `memory_add` with `agent_id` and metadata. Recall uses `memory_search`. A result counts only if its ID was written by this run (provenance, R8), it names the same entity, and it falls inside the 72-hour window. Every search becomes a `Retrieval` record (C3).
 - **Decision agent (M2):**
@@ -259,5 +259,6 @@ TypeScript stays on 6.0.x until typescript-eslint supports 7 (it needs the TypeS
 | 3 | `feat/event-store` | PGlite store, schema, history queries, no-future-data test | D4 | `chore/ci` |
 | 4 | `feat/detection-agents` | The four agents and their rules, `risk-rules.md` rendering, fraud playbooks, step-up policy text | A1–A6, C2 (text) | `feat/event-store` |
 | 5 | `feat/runner-off` | Local signal store, replay loop, run record, `npm run replay`, OFF integration test | R1, R4, R6 | `feat/detection-agents` |
-| 6 | `feat/meko-client` | Config, logger, MCP and REST clients, spike script for K1–K11 | M0, K1–K11 | needs `MEKO_API_KEY` |
-| 7+ | M2 onward | ON signals, decision agent, outcomes, traces and ledger, hygiene audit, metrics, quota guard; then M3–M6 per the plan | | |
+| 6 | `feat/meko-client` | Config, MCP and REST clients with the retry policy, spike script for K1–K11 | M0, K9 | `main` |
+| 7 | `docs/meko-spikes` | K1–K11 answers in `docs/spikes.md`; spec, design and API notes updated to match | K1–K11 | `feat/meko-client` |
+| 8+ | M2 onward | ON signals, decision agent, outcomes, traces and ledger, hygiene audit, metrics, quota guard; then M3–M6 per the plan | | |
