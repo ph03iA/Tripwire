@@ -103,7 +103,10 @@ test("REST: sends the key and User-Agent only to the API, unwraps { data }, turn
 
 test("MCP: parses JSON answers, keeps plain text for reads, raises tool errors and in-band errors, needs a receipt for a write, counts calls by tool", async () => {
   const server = new McpServer({ name: "fake-meko", version: "1.0.0" });
-  server.registerTool("memory_add", { description: "fake" }, async () => ({ content: [{ type: "text", text: JSON.stringify({ id: "m1" }) }] }));
+  const receipt = { results: [{ id: "m1", memory: "x", event: "ADD" }] };
+  // memory_add answers with these in turn: a real receipt, then three without a usable memory ID.
+  const memoryAdds: unknown[] = [receipt, {}, { results: [] }, { results: [{ id: "" }] }];
+  server.registerTool("memory_add", { description: "fake" }, async () => ({ content: [{ type: "text", text: JSON.stringify(memoryAdds.shift()) }] }));
   server.registerTool("add_truncated", { description: "fake" }, async () => ({ content: [{ type: "text", text: '{"results":[{"id":"m1","mem' }] }));
   server.registerTool("add_empty", { description: "fake" }, async () => ({ content: [] }));
   server.registerTool("plain", { description: "fake" }, async () => ({ content: [{ type: "text", text: "not json" }] }));
@@ -113,7 +116,11 @@ test("MCP: parses JSON answers, keeps plain text for reads, raises tool errors a
   await server.connect(serverSide);
   const mcp = await mcpOver(clientSide, noWait);
   try {
-    assert.deepEqual(await mcp.call("memory_add", { text: "x" }, "write-once"), { id: "m1" });
+    assert.deepEqual(await mcp.call("memory_add", { text: "x" }, "write-once"), receipt);
+    for (const answer of ["{}", "no results", "an empty ID"]) {
+      await assert.rejects(mcp.call("memory_add", { text: "x" }, "write-once"), UnknownOutcomeError, `memory_add answering ${answer}`);
+    }
+    assert.equal(mcp.calls.get("memory_add"), 4, "one attempt each: a write without its memory ID is never resent");
     assert.equal(await mcp.call("plain", {}, "read"), "not json");
     await assert.rejects(mcp.call("broken", {}, "read"), /broken: datapack not found/);
     await assert.rejects(mcp.call("refused", {}, "write-once"), (e: MekoError) => e.message === "refused: datapack_id_required" && !(e instanceof UnknownOutcomeError));
@@ -122,7 +129,6 @@ test("MCP: parses JSON answers, keeps plain text for reads, raises tool errors a
       assert.equal(mcp.calls.get(tool), 1, "never resent");
     }
     assert.deepEqual((await mcp.tools()).map((t) => t.name).sort(), ["add_empty", "add_truncated", "broken", "memory_add", "plain", "refused"]);
-    assert.equal(mcp.calls.get("memory_add"), 1);
   } finally {
     await mcp.close();
   }
