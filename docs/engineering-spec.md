@@ -191,7 +191,7 @@ These are fixed now so that earlier code doesn't box them in; each lands in its 
     | --- | --- | --- |
     | Reads: searches, gets, lists, document status | Retry | Retry |
     | Idempotent writes: `artifact_put` (keyed by content hash), datapack create (a repeat returns 409) | Retry | Retry |
-    | `memory_add` | Retry (the request was refused, not processed) | Don't resend. Search for the signal's stable key (event ID + rule ID, written into its text). Re-add only if it's missing. |
+    | `memory_add` | Retry (the request was refused, not processed) | **Never resend.** Look for the signal's stable key (event ID + rule ID, written into its text) in the newest page of `memory_get_all` and with `memory_search`, a few times over the indexing delay K1 measures. A hit confirms the write. A miss proves nothing, because the first write may be saved but not yet indexed, so the write stays unresolved: record the run as failed and stop. |
     | `POST /promote-memories` | Retry | Check the promoted list for the ID first; promote again only if it's absent |
     | `conversation_add_message`, `conversation_create` | Retry | No way to check, so mark the run `incomplete` with the event ID. Never resend blindly. |
 
