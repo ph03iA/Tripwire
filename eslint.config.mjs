@@ -13,11 +13,15 @@ export default defineConfig(
     },
   },
   {
-    // PRD R3: agents never see ground truth, so they can't reach the generator, runner or metrics.
+    // PRD R3: agents never see ground truth: no generator, runner, metrics, labels file or data folder.
+    // Checked by packages/engine/src/lint.test.ts.
     files: ["packages/engine/src/agents/**"],
     rules: {
       "no-restricted-imports": ["error", {
-        patterns: [{ group: ["**/generator/**", "**/runner/**", "**/metrics*"], message: "Agents must not see labels (PRD R3)." }],
+        patterns: [{
+          group: ["**/generator/**", "**/runner/**", "**/metrics*", "**/labels.json", "**/data/**"],
+          message: "Agents must not see labels (PRD R3).",
+        }],
       }],
     },
   },

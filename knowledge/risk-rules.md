@@ -21,7 +21,7 @@ Sees every event that has device fields: logins, resets, account changes and tra
 
 | Rule | Signal | Fires when |
 | --- | --- | --- |
-| `device.new-device` | new_device | the device isn't in the account's profile and has never been used on the account (0.4) |
+| `device.new-device` | new_device | the device isn't in the account's profile and has never been used on the account; failed logins don't count (0.4) |
 | `device.shared` | shared_device | the device was used by other accounts in the last 7 days (0.5 for one, 0.7 for two, 0.8 for three or more) |
 | `device.rare-ua` | rare_user_agent | the browser string is on fewer than 2% of the devices in all account profiles (0.2) |
 | `device.new-after-reset` | new_device_after_reset | a password reset is made from a new device, or a new device appears within 60 minutes of a reset (0.6) |
@@ -44,7 +44,7 @@ Sees support-desk contacts and account changes.
 
 | Rule | Signal | Fires when |
 | --- | --- | --- |
-| `support.weak-verification` | weak_verification | a password-reset or email-change request is verified only by security questions (0.5), or not at all (0.6) |
-| `support.caller-mismatch` | caller_mismatch | the caller's phone isn't the registered one (0.3), or the caller is also outside the home city (0.4) |
+| `support.weak-verification` | weak_verification | a password-reset or email-change request is verified only by security questions (0.5) or not at all (0.6); a failed check on one scores (0.4) |
+| `support.caller-mismatch` | caller_mismatch | the caller's phone isn't the registered one (0.3), or is also outside the home city (0.4); the registered phone calling from outside the home city scores (0.2) |
 | `support.sensitive-change` | sensitive_change | an email, phone, payout-method or 2FA change is made (0.4) |
-| `support.change-after-new-device` | sensitive_change | after recall: a sensitive change comes within 60 minutes of a new-device signal on the account (0.6) |
+| `support.change-after-new-device` | sensitive_change | after recall: a sensitive change comes within 60 minutes after a successful login from a new device on the account (0.6) |

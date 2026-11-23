@@ -30,6 +30,12 @@ test("history queries answer from inserted events only", async () => {
     // The last successful activity is the reset at minute 6 in Pune; the support call has no device location.
     assert.deepEqual(await store.lastActivity("acc_1"), { ts: new Date(at(6)), city: "Pune", country: "IN" });
     assert.equal(await store.lastActivity("acc_9"), null);
+    // A declined payment elsewhere doesn't move the customer: Delhi survives a later decline in Mumbai.
+    const acc3 = { accountId: "acc_3", ...client, deviceId: "dev_c" };
+    await store.insert({ ...base("d1", 10), ...acc3, geo: { country: "IN", city: "Delhi" }, kind: "login", success: true, method: "password" }, 100);
+    await store.insert({ ...base("d2", 11), ...acc3, geo: { country: "IN", city: "Mumbai" }, kind: "transaction", type: "card_charge",
+      amountMinor: 200, currency: "INR", merchantId: "m9", status: "declined" }, 101);
+    assert.equal((await store.lastActivity("acc_3"))?.city, "Delhi");
     assert.equal(await store.resetSince("acc_1", at(6)), true);
     assert.equal(await store.resetSince("acc_1", at(6), "support"), true);
     assert.equal(await store.resetSince("acc_1", at(7)), false);
@@ -39,6 +45,13 @@ test("history queries answer from inserted events only", async () => {
     assert.equal(await store.otherAccountsOnDevice("dev_a", "acc_2", at(0)), 1);
     assert.deepEqual(await store.smallCharges("acc_1", at(0)), { count: 2, merchants: ["m1", "m2"] });
     assert.deepEqual(await store.smallCharges("acc_9", at(0)), { count: 0, merchants: [] });
+    // A failed login doesn't count as using a device; a charge with no merchant counts as a charge, not a merchant.
+    const acc5 = { accountId: "acc_5", ...client, deviceId: "dev_f" };
+    await store.insert({ ...base("f1", 20), ...acc5, kind: "login", success: false, method: "password", failureReason: "bad_password" }, 102);
+    assert.equal(await store.deviceSeenOnAccount("acc_5", "dev_f"), false);
+    await store.insert({ ...base("f2", 21), ...acc5, kind: "transaction", type: "card_charge", amountMinor: 100, currency: "INR", merchantId: "mx", status: "approved" }, 103);
+    await store.insert({ ...base("f3", 22), ...acc5, kind: "transaction", type: "card_charge", amountMinor: 100, currency: "INR", status: "approved" }, 104);
+    assert.deepEqual(await store.smallCharges("acc_5", at(0)), { count: 2, merchants: ["mx"] });
     assert.deepEqual(await store.medianAmount("acc_1"), { median: 900, count: 3 });
     assert.deepEqual(await store.medianAmount("acc_9"), { median: null, count: 0 });
   } finally {

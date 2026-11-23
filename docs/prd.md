@@ -156,8 +156,8 @@ Priority: **M** = Must, **S** = Should, **C** = Could.
 | C1 | Runs on every sensitive event (credential or payout change, password reset, transfer, payout, card charge ≥ ₹10,000) and on any new signal ≥ 0.7. All other events are allowed without review, each with a one-line reason. | M |
 | C2 | Risk = noisy-OR of the strongest signal of each type in the last 72 hours. Policy: risk ≥ 0.8 is BLOCK, 0.5–0.8 is STEP-UP, anything lower is ALLOW. A known device plus travel alone is capped at STEP-UP. The policy text lives in the knowledge base (`step-up-policy.md`) and is mirrored in code. | M |
 | C3 | Decision record: action, risk, signals used, patterns matched, rules applied, quoted passages from the matching fraud playbook and from the step-up policy (with document IDs), plain-English reason, latency. It also holds a retrieval record for every Meko search any agent made for this event: tool, datapack, query, returned IDs, used IDs, errors. | M |
-| C4 | Trace: one Meko conversation per case. Every STEP-UP, every BLOCK, and every ALLOW with a signal or a search behind it gets its own `conversation_add_message`, with the decision record as output plus `reasoning` and `plan`. The decision agent's searches pass the case's `conversation_id`, so the portal can show them under it (K11). The record lists every search either way. The dashboard links to the trace. | M |
-| C5 | Allow ledger: one trace turn per simulated day lists every event allowed without a trace of its own, by event ID, with its reason and any searches made for it. Every ALLOW is therefore explained in a Meko trace. | M |
+| C4 | Trace: one Meko conversation per case. Every STEP-UP and every BLOCK gets its own `conversation_add_message`, with the decision record as output plus `reasoning` and `plan`. The decision agent's searches pass the case's `conversation_id`, so the portal can show them under it (K11). The record lists every search either way. The dashboard links to the trace. | M |
+| C5 | Allow ledger: one trace turn per simulated day lists every ALLOW, reviewed or not, by event ID, with its reason, the signals behind it and any searches made for it. Every ALLOW is therefore explained in a Meko trace without a turn of its own. | M |
 
 ### Runner
 
@@ -215,7 +215,7 @@ The judges weight Meko use at 30% and ask for every part of it. Each row below i
 | Learnings | Patterns a human approved, promoted to Collective Memory | `memory_add` in `patterns` on approval, then `POST /promote-memories` |
 | Knowledge base | Fraud playbooks (the matching one quoted in each decision), risk rules, step-up policy, approved patterns | REST upload, `knowledgebase_search`, `context_search` |
 | Conversations | One case file per alert: decisions and analyst notes | `conversation_create`, `conversation_add_message` |
-| Decision traces | `reasoning` and `plan` on every flagged decision, searches attributed to the case, a daily allow ledger | `conversation_add_message`, `conversation_id` on searches |
+| Decision traces | `reasoning` and `plan` on every STEP-UP and BLOCK, searches attributed to the case, and a daily allow ledger that explains every ALLOW | `conversation_add_message`, `conversation_id` on searches |
 | Artifacts | Incident reports and candidate pattern drafts, versioned | `artifact_put`, `artifact_get` |
 | Postgres (AMP) | Raw events and the device/payee graph that agents query. If AMP isn't on the Free plan, we use PGlite locally and say so in the submission. | SQL |
 | Datapacks | `signals` (cleared every run) and `patterns` (kept, reset between evaluation runs) | REST |
@@ -264,7 +264,7 @@ The judges weight Meko use at 30% and ask for every part of it. Each row below i
 | Area | Requirement |
 | --- | --- |
 | Cost | $0: Meko Free plan, no paid APIs |
-| Meko quota | Per ON run: at most 120 conversation calls (traces, case files, allow ledger) and 800 searches. At most 8 of the 10 lifetime datapack slots: 2 working ones, plus up to 6 fresh `patterns` datapacks if old patterns can't be deleted between evaluation runs. |
+| Meko quota | Per ON run: at most 120 conversation calls (STEP-UP and BLOCK traces, case files, 14 allow-ledger turns) and 800 searches, checked by the M2 dry run before the first ON run. At most 8 of the 10 lifetime datapack slots: 2 working ones, plus up to 6 fresh `patterns` datapacks if old patterns can't be deleted between evaluation runs. |
 | Reproducibility | Same seed and mode give the same decisions. Any variance from Meko indexing timing is measured and reported. |
 | Security | The Meko key lives in `.env` on the server side only. The static demo has no keys. All data is synthetic. |
 | Speed | A fast-mode run finishes in under 10 minutes |

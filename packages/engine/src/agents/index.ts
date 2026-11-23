@@ -58,7 +58,8 @@ export function toSignals(agent: AgentName, e: TripwireEvent, findings: Finding[
   const entities = entitiesOf(e);
   return findings
     .filter((f) => f.score >= WRITE_AT)
-    .map((f) => ({ agent, ruleId: f.ruleId, type: f.type, score: f.score, accountId: e.accountId, eventId: e.id, ts: e.ts, entities, evidence: f.evidence }));
+    .map((f) => ({ agent, ruleId: f.ruleId, type: f.type, score: f.score, accountId: e.accountId, eventId: e.id, eventKind: e.kind, ts: e.ts,
+      entities, evidence: f.evidence }));
 }
 
 /** The entities an event names, which signals carry and recall searches by. */

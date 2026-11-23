@@ -21,7 +21,8 @@ const ev = (account: string, minute: number, body: Record<string, unknown>) =>
   ({ id: `e${++seq}`, ts: ts(minute), accountId: account, ...home, deviceId: `dev_${account}`, ...body }) as TripwireEvent;
 const login = (success: boolean, extra: Record<string, unknown> = {}) =>
   ({ kind: "login", success, method: "password", ...(success ? {} : { failureReason: "bad_password" }), ...extra });
-const charge = (paise: number, merchantId: string) => ({ kind: "transaction", type: "card_charge", amountMinor: paise, currency: "INR", merchantId, status: "approved" });
+const charge = (paise: number, merchantId?: string) =>
+  ({ kind: "transaction", type: "card_charge", amountMinor: paise, currency: "INR", ...(merchantId ? { merchantId } : {}), status: "approved" });
 const pay = (type: "transfer" | "payout", paise: number, payeeIsNew: boolean) => ({ kind: "transaction", type, amountMinor: paise, currency: "INR", payeeId: "pay_x", payeeIsNew, status: "approved" });
 const call = (method: "kba" | "otp" | "none", intent: string, extra: Record<string, unknown> = {}) =>
   ({ kind: "support_contact", channel: "phone", intent, callerPhone: "+910000000000", callerGeo: home.geo, verification: { method, passed: true }, ...extra });
@@ -35,6 +36,9 @@ before(async () => (store = await openStore()));
 after(() => store.close());
 
 type Case = { name: string; history?: TripwireEvent[]; event: TripwireEvent; recalled?: RiskSignal[]; expect: Record<string, number> };
+
+const newDeviceSignal = (account: string, eventKind: RiskSignal["eventKind"], minute: number): RiskSignal =>
+  ({ agent: "device", ruleId: "device.new-device", type: "new_device", score: 0.4, accountId: account, eventId: `x${minute}`, eventKind, ts: ts(minute), entities: {}, evidence: "" });
 
 /** Runs each case on its own account, so cases can share one store. Checks the exact rules that fire and their scores. */
 async function check(agent: Agent, cases: Case[]) {
@@ -78,6 +82,13 @@ test("device agent", () =>
     { name: "rare browser on a known device", event: ev("d6", 0, login(true, { userAgent: RARE_UA })), expect: { "device.rare-ua": 0.2 } },
     { name: "reset from a new device", event: ev("d7", 0, { kind: "password_reset", channel: "support", deviceId: "dev_7" }), expect: { "device.new-device": 0.4, "device.new-after-reset": 0.6 } },
     { name: "new device after a reset", history: [ev("d8", 0, { kind: "password_reset", channel: "email" })], event: ev("d8", 30, login(true, { deviceId: "dev_8" })), expect: { "device.new-device": 0.4, "device.new-after-reset": 0.6 } },
+    { name: "a failed login doesn't show a new device", event: ev("d9", 0, login(false, { deviceId: "dev_9" })), expect: {} },
+    {
+      name: "first success on a phone seen only in a failed login",
+      history: [ev("d10", 0, login(false, { deviceId: "dev_10" }))],
+      event: ev("d10", 1, login(true, { deviceId: "dev_10" })),
+      expect: { "device.new-device": 0.4 },
+    },
   ]));
 
 test("transaction agent", () =>
@@ -96,6 +107,13 @@ test("transaction agent", () =>
     { name: "payout to a new bank", event: ev("t7", 0, pay("payout", 2_000_000, true)), expect: { "txn.payout-new-bank": 0.4 } },
     { name: "big payout to a new bank", event: ev("t8", 0, pay("payout", 6_000_000, true)), expect: { "txn.payout-new-bank": 0.6 } },
     { name: "10× the usual", history: [1, 2, 3].map((m) => ev("t9", m, pay("transfer", 100_000, false))), event: ev("t9", 10, charge(1_000_000, "m1")), expect: { "txn.amount-anomaly": 0.4 } },
+    { name: "a check with no merchant isn't another merchant", history: [ev("t10", 0, charge(100, "m1")), ev("t10", 5, charge(200, "m2"))], event: ev("t10", 10, charge(300)), expect: {} },
+    {
+      name: "no cash-out flag when one of the checks has no merchant",
+      history: [ev("t11", 0, charge(100, "m1")), ev("t11", 5, charge(200, "m2")), ev("t11", 10, charge(300))],
+      event: ev("t11", 20, charge(2_000_000, "m4")),
+      expect: { "txn.amount-anomaly": 0.4 },
+    },
   ]));
 
 test("support agent", () =>
@@ -112,13 +130,32 @@ test("support agent", () =>
     },
     { name: "email change on its own", event: ev("s7", 0, { kind: "account_change", field: "email", channel: "web" }), expect: { "support.sensitive-change": 0.4 } },
     {
-      name: "email change 30 min after a new-device signal",
+      name: "email change 30 min after a login from a new device",
       event: ev("s8", 30, { kind: "account_change", field: "email", channel: "web" }),
-      recalled: [{ agent: "device", ruleId: "device.new-device", type: "new_device", score: 0.4, accountId: "s8", eventId: "x", ts: ts(0), entities: {}, evidence: "" }],
+      recalled: [newDeviceSignal("s8", "login", 0)],
       expect: { "support.sensitive-change": 0.4, "support.change-after-new-device": 0.6 },
     },
+    {
+      name: "a new device seen on a payment isn't a new-device login",
+      event: ev("s12", 30, { kind: "account_change", field: "email", channel: "web" }),
+      recalled: [newDeviceSignal("s12", "transaction", 0)],
+      expect: { "support.sensitive-change": 0.4 },
+    },
+    {
+      name: "a new-device login after the change doesn't explain it",
+      event: ev("s13", 30, { kind: "account_change", field: "email", channel: "web" }),
+      recalled: [newDeviceSignal("s13", "login", 40)],
+      expect: { "support.sensitive-change": 0.4 },
+    },
     { name: "a password change isn't sensitive here", event: ev("s9", 0, { kind: "account_change", field: "password", channel: "app" }), expect: {} },
+    { name: "registered phone from another city", event: ev("s10", 0, call("kba", "other", { callerGeo: { country: "IN", city: "Delhi" } })), expect: { "support.caller-mismatch": 0.2 } },
+    { name: "failed security questions", event: ev("s11", 0, call("kba", "reset_password", { verification: { method: "kba", passed: false } })), expect: { "support.weak-verification": 0.4 } },
   ]));
+
+test("a failed check is never described as a successful one", async () => {
+  const [finding] = await detect(supportAgent, ev("s14", 0, call("kba", "reset_password", { verification: { method: "kba", passed: false } })), ctx(), async () => []);
+  assert.equal(finding!.evidence, "failed kba check on a reset password request");
+});
 
 test("routing, noisy-OR, recall threshold and signals", async () => {
   const names = (e: TripwireEvent) => agentsFor(e).map((a) => a.name);
@@ -143,5 +180,6 @@ test("routing, noisy-OR, recall threshold and signals", async () => {
     { ruleId: "device.rare-ua", type: "rare_user_agent", score: 0.2, evidence: "b" },
   ]);
   assert.equal(signals.length, 1);
+  assert.equal(signals[0]!.eventKind, "transaction");
   assert.deepEqual(signals[0]!.entities, { ip: home.ip, deviceId: "dev_r4", payeeId: "pay_x", merchantId: undefined });
 });

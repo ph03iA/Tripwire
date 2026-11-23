@@ -91,6 +91,7 @@ export type RiskSignal = {
   score: number; // 0..1
   accountId: string;
   eventId: string;
+  eventKind: TripwireEvent["kind"]; // what kind of event the signal is about, so a reader can't mistake it for a login
   ts: string;
   entities: { ip?: string; deviceId?: string; payeeId?: string; merchantId?: string };
   evidence: string; // one sentence

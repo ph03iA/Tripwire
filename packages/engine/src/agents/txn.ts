@@ -17,7 +17,7 @@ const cardTesting: Rule = {
   async fire(e, { history }) {
     if (!isCharge(e) || e.amountMinor >= SMALL) return null;
     const earlier = await history.smallCharges(e.accountId, minutesBefore(e, 30));
-    const merchants = new Set([...earlier.merchants, e.merchantId]).size;
+    const merchants = new Set([...earlier.merchants, e.merchantId].filter((m) => m !== undefined)).size;
     if (earlier.count + 1 < 3 || merchants < 3) return null;
     return { score: 0.6, evidence: `${earlier.count + 1} charges under ₹50 at ${merchants} merchants in 30 min` };
   },
