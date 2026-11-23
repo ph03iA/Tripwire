@@ -14,6 +14,7 @@ Decisions are deterministic (rules + shared memory + approved patterns), so Trip
 | --- | --- |
 | [PRD](docs/prd.md) | Problem, goals, requirements, how Meko is used, evaluation |
 | [Build plan](docs/plan.md) | Milestones to Jan 15, week-1 checks, quota budget, video script |
+| [Engineering spec](docs/engineering-spec.md) | Module map, contracts, rules, testing, CI, PR workflow |
 | [Technical design](docs/design.md) | Layout, agents, event schema, scenarios |
 | [Meko API notes](docs/meko-api.md) | How Meko is called from TypeScript, Free-plan limits |
 

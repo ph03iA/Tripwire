@@ -8,6 +8,7 @@ Read this first in every session (Codex, Claude Code or any other agent).
 Read these before doing anything:
 - [docs/prd.md](docs/prd.md): what we build and why. Requirement IDs (A1, C4, R8, …) are referenced everywhere else.
 - [docs/plan.md](docs/plan.md): milestones M0–M7, week-1 checks K1–K11, quota budget, cut list.
+- [docs/engineering-spec.md](docs/engineering-spec.md): how it's built: modules, contracts, rules, testing, CI and the PR workflow.
 - [docs/design.md](docs/design.md): layout, agents, event schema, scenarios.
 - [docs/meko-api.md](docs/meko-api.md): how Meko is called from TypeScript, and Free-plan limits.
 
