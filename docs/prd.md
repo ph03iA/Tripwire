@@ -167,7 +167,7 @@ Priority: **M** = Must, **S** = Should, **C** = Could.
 | R2 | Stops are final for the attacker. After a BLOCK or a failed STEP-UP on an account, later events from the device that triggered it are denied for the rest of the run. So are payments and credential changes from any device not in the account's profile or verified history. Each denied event is logged with the rule that denied it. | M |
 | R3 | The runner is the world simulator. It decides OTP outcomes from the labels (the real owner passes; an attacker fails unless the scenario gave them the phone) and writes a `step_up_result` event. Agents never read labels, scenario IDs or steps. | M |
 | R4 | `--meko on\|off`. OFF means no Meko at all: each decision sees only the owning agent's own signals, with no knowledge base and no learnings. Rules and thresholds stay the same. | M |
-| R5 | Run isolation. Each ON run starts with an empty `signals` datapack. Each evaluation run also starts with zero learned patterns: earlier runs' approved patterns are deleted (K7), or the run gets a fresh `patterns` datapack. A probe search before the run must return no learned pattern. | M |
+| R5 | Run isolation. Each ON run starts with an empty `signals` datapack. Each evaluation run also starts with zero learned patterns. Promoted patterns can't be deleted (K7), so each evaluation run gets a fresh `patterns` datapack. A probe search before the run must return no learned pattern. | M |
 | R6 | Each run is saved to `runs/<id>.json`: signals, decisions, cases, patterns, metrics, Meko call counts | M |
 | R7 | Quota guard: counts Meko calls and refuses an ON run that would go over the remaining monthly quota | M |
 | R8 | Memory hygiene: only risk signals and confirmed patterns are saved as memories. Trace and note turns use a fixed, fact-free user turn; the details go in the output and `reasoning`. Agents trust only memories whose IDs the runner wrote in this run, plus approved pattern IDs. After each ON run, an audit waits for Meko's background extraction to finish and pages through every memory. It deletes anything not on those ID lists, repeating `memory_delete_all` until it reports complete, and fails the run if anything is left. | M |
@@ -264,7 +264,7 @@ The judges weight Meko use at 30% and ask for every part of it. Each row below i
 | Area | Requirement |
 | --- | --- |
 | Cost | $0: Meko Free plan, no paid APIs |
-| Meko quota | Per ON run: at most 120 conversation calls (STEP-UP and BLOCK traces, case files, 14 allow-ledger turns) and 800 searches, checked by the M2 dry run before the first ON run. At most 8 of the 10 lifetime datapack slots: 2 working ones, plus up to 6 fresh `patterns` datapacks if old patterns can't be deleted between evaluation runs. |
+| Meko quota | Per ON run: at most 120 conversation calls (STEP-UP and BLOCK traces, case files, 14 allow-ledger turns) and 800 searches, checked by the M2 dry run before the first ON run. All 10 lifetime datapack slots: the default one and `tripwire-spike` (already used), 2 working ones, and 6 fresh `patterns` datapacks, because promoted patterns can't be deleted (K7). None is spare. |
 | Reproducibility | Same seed and mode give the same decisions. Any variance from Meko indexing timing is measured and reported. |
 | Security | The Meko key lives in `.env` on the server side only. The static demo has no keys. All data is synthetic. |
 | Speed | A fast-mode run finishes in under 10 minutes |
@@ -279,7 +279,7 @@ The judges weight Meko use at 30% and ask for every part of it. Each row below i
 
 ## 11. Risks and open questions
 
-**Unknowns to check in week 1** (details in [plan.md](plan.md#week-1-checks)):
+**Unknowns to check in week 1** (details in [plan.md](plan.md#week-1-checks); answers in [spikes.md](spikes.md)):
 
 | ID | Unknown | Fallback |
 | --- | --- | --- |

@@ -33,13 +33,15 @@ Nothing on this list calls an LLM (see the PRD's decision). Every decision is de
 
 | Component | How it decides | Meko calls (ON mode) |
 | --- | --- | --- |
-| Login / Device / Txn / Support agents | Rules over their own events, plus Postgres counts and the account profiles. The device agent also sees every event that has client fields, alongside its owning agent. When their score is ≥ 0.2 they recall shared signals and approved patterns. A recalled signal counts only on an entity match inside the 72-hour window. | `memory_add` a **risk signal** when score ≥ 0.4. `memory_search` by account, device, IP or payee; pattern search on `patterns` (tool chosen by K3). Every search is recorded. |
+| Login / Device / Txn / Support agents | Rules over their own events, plus Postgres counts and the account profiles. The device agent also sees every event that has client fields, alongside its owning agent. When their score is ≥ 0.2 they recall shared signals and approved patterns. A recalled signal counts only on an entity match inside the 72-hour window. | `memory_add` a **risk signal** when score ≥ 0.4. `memory_search` by account, device, IP or payee, scoped to the run with `run_id` (K2); `knowledgebase_search` on `patterns` for approved patterns (K3). Every search is recorded. |
 | Decision agent | Runs on every sensitive event and on any signal ≥ 0.7. Risk = noisy-OR of the strongest signal per type in the last 72h: ≥ 0.8 BLOCK, 0.5–0.8 STEP-UP, else ALLOW. Writes the "why" from the decision record, quoting the matching fraud playbook and the step-up policy. STEP-UPs and BLOCKs get their own trace turn; every ALLOW goes into the daily allow ledger. | `memory_search` (signals) and `knowledgebase_search` (playbook and policy passages, patterns), each with the case `conversation_id`; `conversation_create` / `conversation_add_message` with a fact-free user turn, the decision record as output, `reasoning` and `plan` |
-| Analyst agent | When a case closes, extracts the indicators the case shares (browser string, IP prefix, device, payee or bank, signal order, timing) into a pattern template, and writes an incident report. | Candidate pattern and incident report → `artifact_put` (no memory until approved; the case keeps its list of version hashes). Approve → approval conversation in `patterns`, `memory_add` linked to it, `POST /promote-memories`, then confirm in the promoted list. Reject → the draft is marked rejected. |
+| Analyst agent | When a case closes, extracts the indicators the case shares (browser string, IP prefix, device, payee or bank, signal order, timing) into a pattern template, and writes an incident report. | Candidate pattern and incident report → `artifact_put` (no memory until approved; the case keeps its list of version hashes). Approve → approval conversation in `patterns`, `memory_add` linked to it, `memory_promote`, then confirm in the promoted list (K4). Reject → the draft is marked rejected. |
 
 Datapacks:
-- `signals`: signals, case conversations and the allow ledger. Cleared at the start of every ON run.
-- `patterns`: playbooks, rules, policy, and approved patterns, which are its only memories. Reset between evaluation runs.
+- `signals`: signals, case conversations and the allow ledger. Cleared at the start of every ON run. Each run writes its signals under its own run conversation and recalls them with `run_id`, so runs never mix (K2).
+- `patterns`: playbooks, rules, policy, and approved patterns, which are its only memories. A promoted pattern can't be deleted (K7), so each evaluation run gets a fresh `patterns` datapack.
+
+The brief asks for these two to stay separate. With a fresh `patterns` datapack for each evaluation run, they use all 10 of the Free plan's datapacks: see the [budget](spikes.md#datapacks-budget).
 
 ### Meko ON vs OFF
 
@@ -166,6 +168,6 @@ Benign customers who each share one suspicious trait with an attack. They exist 
 
 Background traffic also mixes in runs of 2–3 failed logins, KBA support calls, switches to a new bank account, and tiny and large payments.
 
-## Still to check in week 1
+## Week-1 checks
 
-The unknowns (K1–K11) and how each is tested are in the [build plan](plan.md#week-1-checks).
+The unknowns (K1–K11) and how each is tested are in the [build plan](plan.md#week-1-checks). The answers, measured against Meko on 2026-11-23, are in [spikes](spikes.md).

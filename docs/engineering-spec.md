@@ -63,7 +63,7 @@ Dependencies only point downward: `types` ← `store` ← `agents` ← `signals`
 ## 3. Event store (D4)
 
 PGlite (Postgres compiled to WebAssembly) runs in process, so the store needs no install, no account and no network. Each run gets a fresh in-memory database.
-`shortcut: PGlite in memory, one run per database; switch openStore() to a pg Pool on Meko AMP once K5 confirms the Free plan has it.` The SQL is standard Postgres, so only `openStore()` changes.
+`shortcut: PGlite in memory, one run per database; switch openStore() to a pg Pool on Meko AMP once K5 confirms the Free plan has it.` The SQL is standard Postgres, so only `openStore()` changes. K5 found AMP on the Free plan, capped at 0.5 vCPU. The recommendation is still to stay on PGlite: OFF mode must make no Meko calls, and every history query would cross the network ([spikes](spikes.md)).
 
 **No future data, by construction:** for each event, the runner first runs the agents against the store, *then* inserts the event. A query can therefore only ever see strictly earlier events. A test replays a stream and checks that no query result references an event at or after the one being processed.
 
@@ -189,21 +189,30 @@ These are fixed now so that earlier code doesn't box them in; each lands in its 
   The working datapacks have fixed names (`tripwire-signals`, `tripwire-patterns`) and are looked up by name with `GET /datapacks`, so no datapack IDs need configuring. `TRIPWIRE_LOG_LEVEL` comes with `log.ts` in M2, when the ON runner first has something to log.
 - **Meko client (M0):**
   - MCP through `@modelcontextprotocol/sdk` (`StreamableHTTPClientTransport`). REST through `fetch`.
-  - Both send `Authorization: Bearer` and `User-Agent: tripwire/<version>`, with a 10 s timeout.
+  - Both send `Authorization: Bearer` and `User-Agent: tripwire/<version>`, with a 10 s timeout. REST refuses any URL outside the API base, so the key never reaches another host. The knowledge-base upload's POST to storage (M1) is a separate request, sent without it.
   - **Retries depend on the operation**, because a write whose response is lost may still have been saved, and `memory_add` stores duplicates:
 
-    | Operation | On 429 | On 5xx, timeout or network error |
+    | Operation | On 429 | On anything short of a clear refusal (a 5xx or JSON-RPC internal error, a timeout, a network error, an answer that can't be read) |
     | --- | --- | --- |
     | Reads: searches, gets, lists, document status | Retry | Retry |
-    | Idempotent writes: `artifact_put` (keyed by content hash), datapack create (a repeat returns 409) | Retry | Retry |
-    | `memory_add` | Retry (the request was refused, not processed) | **Never resend.** Look for the signal's stable key (event ID + rule ID, written into its text) in the newest page of `memory_get_all` and with `memory_search`, a few times over the indexing delay K1 measures. A hit confirms the write. A miss proves nothing, because the first write may be saved but not yet indexed, so the write stays unresolved: record the run as failed and stop. |
-    | `POST /promote-memories` | Retry | Check the promoted list for the ID first; promote again only if it's absent |
-    | `conversation_add_message`, `conversation_create` | Retry | No way to check, so mark the run `incomplete` with the event ID. Never resend blindly. |
+    | Idempotent writes: `artifact_put` (keyed by content hash), datapack create (a repeat returns 409), `conversation_create` with a `session_id` and `conversation_add_message` with a `seed` (a repeat returns the same ID and stores nothing new, K10) | Retry | Retry |
+    | `memory_add` | Retry (the request was refused, not processed) | **Never resend.** A receipt without a memory ID (`results[0].id`) is the same unknown outcome. Look for the signal's stable key (event ID + rule ID, in its text and metadata) with `memory_search` scoped to the run and in `memory_get_all`, a few times over about 5 s (K1 found a write on the first search, 1.1 s after it returned, in its one sample). A hit confirms the write. A miss proves nothing, because the first write may still be in flight, so the write stays unresolved: record the run as failed and stop. |
+    | `memory_promote` (or REST `POST /promote-memories`) | Retry | Check the promoted list for the ID first; promote again only if it's absent. A repeat is harmless: it returns the ID in `not_found_ids` (K4). |
 
-    Retries use 3 attempts with exponential backoff and jitter (0.5 s → 4 s) and honor `Retry-After`. Other 4xx responses fail at once. `meko/retry.ts` holds the policy: callers name the operation (`read`, `idempotent`, `write-once`), and a `write-once` call whose outcome is unknown throws `UnknownOutcomeError` instead of being resent.
+    Conversation writes always carry their dedupe key, so a retry stores nothing new. `seed` is the run ID plus the event ID (or the ledger day). `session_id` is a 32-hex hash of the run ID and the case key: Meko's docs say a hex `session_id` becomes the conversation ID unchanged, so the ID is known before the call. One live call confirms that before M2 relies on it. A retry still has a side effect: Meko may extract a memory from each call it accepts (K10's two sends of one turn left two), and hygiene deletes them. When all 3 attempts fail, the outcome is unknown, and the recovery depends on the write:
+    - `conversation_create`: `conversation_get` on the known ID shows whether the conversation exists. If it doesn't, or that can't be checked, the run is recorded as failed.
+    - `conversation_add_message`: the runner waits about 10 s for the background write (K10) and looks for the turn in that conversation with `conversation_get`. Found, the write is done. Not found, the run is recorded as failed, because C4 needs every trace.
+
+    Retries use 3 attempts with exponential backoff and jitter (0.5 s → 4 s). They honor `Retry-After`, in seconds or as an HTTP date, over MCP too: the SDK drops a 429's headers, so the client reads them first. A wait longer than 60 s isn't shortened: the error is surfaced instead. Only a clear refusal fails at once: a 4xx other than 429, a JSON-RPC error other than an internal one, or a tool that answered with an error. Anything else may have been applied, including a success whose body can't be read and a `write-once` answer that isn't a JSON receipt. `meko/retry.ts` holds the policy: callers name the operation (`read`, `idempotent`, `write-once`), and a `write-once` call whose outcome is unknown throws `UnknownOutcomeError` instead of being resent.
   - Every response is checked by a type guard before use. An unexpected shape is an error, not a guess. So is an answer that carries `error`: Meko reports some failures inside a successful answer, such as `{"error": "conversation_id_required"}`.
   - Every call is counted for the quota ledger (R7).
-- **ON signal store (M2):** `memory_add` with `agent_id` and metadata. Recall uses `memory_search`. A result counts only if its ID was written by this run (provenance, R8), it names the same entity, and it falls inside the 72-hour window. Every search becomes a `Retrieval` record (C3).
+- **ON signal store (M2):** `memory_add` with `agent_id`, the run's conversation as `conversation_id`, and metadata (stable key, entities). Recall uses `memory_search` with `run_id` set to the run conversation, so a run only sees its own signals (K2). A result counts only if all three hold:
+  - its ID was written by this run (provenance, R8);
+  - it names the same entity, since the search also returns unrelated rows above its 0.2 similarity floor;
+  - it falls inside the 72-hour window.
+
+  Every search becomes a `Retrieval` record (C3).
+- **Hygiene (M2, R5, R8):** an ON run starts by deleting every memory of the four detection agents and of `tripwire:decision` in its datapack (`memory_delete_all` per agent, repeated until `complete`). Meko extracts a memory from each trace or ledger turn's user input within about 30 s, under the conversation's agent ID (K6), and a retried call can be extracted again (K10). So the run ends by waiting at least 60 s after its last conversation call, retries included, and then deleting `tripwire:decision`'s memories again. The R8 audit lists them once more after that delete, so a late extraction can't slip past it. The decision agent writes turns but never writes memories of its own.
 - **Decision agent (M2):**
   - Triggers per C1. Risk is the noisy-OR of the strongest signal per type in 72 h.
   - Policy: ≥ 0.8 BLOCK, 0.5–0.8 STEP-UP, else ALLOW. A known device plus travel alone is capped at STEP-UP.
@@ -215,7 +224,7 @@ These are fixed now so that earlier code doesn't box them in; each lands in its 
 - **Dry run (M2, before the first ON run):** `--meko dry` runs the whole ON pipeline against an in-process stand-in for Meko and reports the conversation calls and searches the run would make. The quota guard and the PRD §9 ceiling are checked against these measured numbers, not estimates.
 - **Outcomes (M2):** R2 and R3. The runner decides OTP outcomes from the labels, and records attempted versus executed takeover events. Prevention is computed from execution (PRD §8).
 - **Quota guard (M2):** `runs/quota.json` keeps a per-month ledger of conversation calls and searches. An ON run refuses to start when its ceiling (PRD §9) doesn't fit the remainder.
-- **Learning loop (M3):** L1–L4 exactly as the PRD states, including the approval conversation and confirmation in the promoted list.
+- **Learning loop (M3):** L1–L4 exactly as the PRD states. Each pattern gets its own approval conversation, a `memory_add` linked to it, `memory_promote`, and confirmation in the promoted list (K4). Patterns are found with `knowledgebase_search`; a hit with `metadata_filters.source: "memory"` is a learned pattern, and anything else is a playbook passage (K3). A promoted pattern can't be deleted (K7), so each evaluation run starts from a fresh patterns datapack (R5).
 
 ## 7. Testing
 
