@@ -1,17 +1,20 @@
 // Week-1 checks against the real Meko account (docs/plan.md, K1–K11): npm run spike -- <check…>
-// Everything runs in its own datapack, tripwire-spike, so the default datapack and the working ones stay clean.
-// Each check saves every call it made to runs/spike/<check>.json. Never run in tests or CI: it spends real quota.
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+// Everything is written to its own datapack, tripwire-spike, which must already exist: the script never creates one.
+// Each check saves its calls to runs/spike/<check>.json, and every run appends its attempts to runs/spike/attempts.jsonl.
+// Never run in tests or CI: it spends real quota.
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { type MekoConfig, mekoConfig } from "../config.js";
 import { connectMcp, type Mcp } from "./mcp.js";
-import { MekoError, type Op } from "./retry.js";
+import type { Op } from "./retry.js";
 import { type Rest, restClient } from "./rest.js";
 
 const OUT = fileURLToPath(new URL("../../../../runs/spike/", import.meta.url));
+const ATTEMPTS = join(OUT, "attempts.jsonl");
 const SPIKE_DATAPACK = "tripwire-spike";
+const PATTERNS_DATAPACK = "tripwire-patterns";
 const AGENT = {
   runner: "tripwire:runner",
   login: "tripwire:login",
@@ -36,15 +39,17 @@ const tag = () => Date.now().toString(36);
 const failure = (err: Error) => ({ error: err.message });
 const mentions = (out: unknown, text: string) => JSON.stringify(out).includes(text);
 
-/** One MCP call in the spike datapack, recorded with its time and answer. */
+/** One MCP call, in the spike datapack unless `args` names another, recorded with its time and answer. */
 async function call(ctx: Ctx, tool: string, args: Record<string, unknown>, op: Op = "read"): Promise<unknown> {
   const full = { datapack_id: ctx.datapackId, ...args };
   const record: Call = { tool, args: brief(full), ms: 0 };
   ctx.calls.push(record);
   const t0 = performance.now();
   try {
-    record.out = await ctx.mcp.call(tool, full, op);
-    return record.out;
+    const out = await ctx.mcp.call(tool, full, op);
+    // An answer from another datapack holds data the spike didn't write, so it isn't saved.
+    if (full.datapack_id === ctx.datapackId) record.out = out;
+    return out;
   } catch (err) {
     record.error = err instanceof Error ? err.message : String(err);
     throw err;
@@ -266,29 +271,33 @@ async function k10(ctx: Ctx) {
   };
 }
 
-/** K11: searches tagged with a case's conversation_id, in this datapack and in another, to look for in the portal trace. */
+/**
+ * K11: searches tagged with a case's conversation_id, in this datapack and, with the pattern search, in
+ * tripwire-patterns (the other datapack the design searches), to look for in the case's portal trace.
+ */
 async function k11(ctx: Ctx) {
+  const patterns = (await datapacks(ctx.rest)).find((d) => d.datapack_name === PATTERNS_DATAPACK);
+  if (!patterns) throw new Error(`${PATTERNS_DATAPACK} doesn't exist yet: K11 runs once the working datapacks do`);
   const caseRun = await conversation(ctx, "k11 case: check its trace in the portal", AGENT.decision);
-  const other = (await datapacks(ctx.rest)).find((d) => d.datapack_id !== ctx.datapackId && d.datapack_name !== SPIKE_DATAPACK);
   const search = (tool: string, datapackId = ctx.datapackId) =>
     call(ctx, tool, { datapack_id: datapackId, query: "risk signals about device dev_k11", conversation_id: caseRun, agent_id: AGENT.decision, limit: 3 }).then(() => "ok", (err: Error) => err.message);
   return {
     caseRun,
     memorySearch: await search("memory_search"),
     knowledgebaseSearch: await search("knowledgebase_search"),
-    otherDatapack: other ? { name: other.datapack_name, memorySearch: await search("memory_search", other.datapack_id) } : "no other datapack",
+    patternsKnowledgebaseSearch: await search("knowledgebase_search", patterns.datapack_id),
   };
 }
 
-/** K8: what the saved checks spent, by tool. The monthly reset date is a question for the Meko Discord. */
+/** K8: what every spike run sent, by tool and retries included, from the attempts log. The portal shows what counted. */
 async function k8() {
+  const runs = readFileSync(ATTEMPTS, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as { mcp: Record<string, number> });
   const byTool = new Map<string, number>();
-  for (const file of readdirSync(OUT).filter((f) => /^k\d+\.json$/.test(f) && f !== "k8.json")) {
-    const calls: Call[] = JSON.parse(readFileSync(join(OUT, file), "utf8")).calls ?? [];
-    for (const c of calls) byTool.set(c.tool, (byTool.get(c.tool) ?? 0) + 1);
+  for (const run of runs) {
+    for (const [tool, n] of Object.entries(run.mcp)) byTool.set(tool, (byTool.get(tool) ?? 0) + n);
   }
   const sum = (tools: string[]) => tools.reduce((n, tool) => n + (byTool.get(tool) ?? 0), 0);
-  return { byTool: Object.fromEntries(byTool), retrievals: sum(RETRIEVALS), conversationMessages: sum(["conversation_add_message"]) };
+  return { runs: runs.length, byTool: Object.fromEntries(byTool), retrievals: sum(RETRIEVALS), conversationMessages: sum(["conversation_add_message"]) };
 }
 
 /** K9: Node connects with our headers: MCP lists its tools and REST answers. Nothing is written. */
@@ -308,21 +317,11 @@ async function datapacks(rest: Rest): Promise<Datapack[]> {
   return list;
 }
 
-/**
- * The spike's datapack, created on first use over REST (MCP's datapack_create needs a conversation, which needs a
- * datapack). A repeat answers 409, so the create is safe to retry. The Free plan allows 10 datapacks ever.
- */
+/** The spike's datapack, found by name. The script never creates one: the Free plan allows 10 ever, and none is spare. */
 async function spikeDatapack(rest: Rest): Promise<string> {
-  const find = async () => (await datapacks(rest)).find((d) => d.datapack_name === SPIKE_DATAPACK)?.datapack_id;
-  const existing = await find();
-  if (existing) return existing;
-  const body = { name: SPIKE_DATAPACK, description: "Tripwire week-1 checks (docs/spikes.md). Disposable test data." };
-  await rest.request("POST", "datapacks", "idempotent", body).catch((err: unknown) => {
-    if (!(err instanceof MekoError && err.status === 409)) throw err;
-  });
-  const created = await find();
-  if (!created) throw new Error(`POST /datapacks answered, but ${SPIKE_DATAPACK} isn't listed`);
-  return created;
+  const id = (await datapacks(rest)).find((d) => d.datapack_name === SPIKE_DATAPACK)?.datapack_id;
+  if (!id) throw new Error(`${SPIKE_DATAPACK} doesn't exist. A new datapack uses one of the 10 lifetime slots, so it's made by hand, with the owner's OK.`);
+  return id;
 }
 
 const CHECKS: Record<string, (ctx: Ctx) => Promise<unknown>> = { k1, k2, k3, k4, k5, k6, k7, k8, k9, k10, k11 };
@@ -334,6 +333,7 @@ if (wanted.length === 0 || unknown.length > 0) {
   process.exit(2);
 }
 mkdirSync(OUT, { recursive: true });
+const ranAt = new Date().toISOString();
 const cfg = mekoConfig();
 const mcp = await connectMcp(cfg);
 const rest = restClient(cfg);
@@ -342,11 +342,17 @@ try {
   for (const id of wanted) {
     ctx.calls = [];
     const t0 = Date.now();
-    const result = await CHECKS[id]!(ctx).catch(failure);
+    const result = await CHECKS[id]!(ctx).catch((err: Error) => {
+      process.exitCode = 1;
+      return failure(err);
+    });
     save(id, { ranAt: new Date(t0).toISOString(), ms: Date.now() - t0, result, calls: ctx.calls });
     console.log(`${id} (${Date.now() - t0} ms): ${JSON.stringify(result, scrub).slice(0, 1200)}`);
   }
 } finally {
-  console.log(`calls: mcp ${JSON.stringify(Object.fromEntries(mcp.calls))}, rest ${JSON.stringify(Object.fromEntries(rest.calls))}`);
+  // The client counts attempts, retries included. Appended, never overwritten, so K8 can add up every run.
+  const attempts = { ranAt, checks: wanted, mcp: Object.fromEntries(mcp.calls), rest: Object.fromEntries(rest.calls) };
+  appendFileSync(ATTEMPTS, JSON.stringify(attempts) + "\n");
+  console.log(`calls: mcp ${JSON.stringify(attempts.mcp)}, rest ${JSON.stringify(attempts.rest)}`);
   await mcp.close();
 }
