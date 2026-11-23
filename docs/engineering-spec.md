@@ -122,7 +122,7 @@ type AgentContext = { history: History; profile(accountId: string): AccountProfi
 
 ### Initial rules
 
-Starting values, tuned on seed 42 only. `knowledge/risk-rules.md` is generated from these definitions (`npm run knowledge`), and CI fails if the committed file differs, so code and knowledge base can't drift (A5).
+Starting values, tuned on seed 42 only. The code is the source of truth: `knowledge/risk-rules.md` is generated from the rules' own `when` sentences (`npm run knowledge`), and a test fails if the committed file differs, so code and knowledge base can't drift (A5).
 
 | Agent | Rule | Signal | Fires when | Score |
 | --- | --- | --- | --- | --- |
@@ -130,19 +130,19 @@ Starting values, tuned on seed 42 only. `knowledge/risk-rules.md` is generated f
 | login | `login.failures-then-success` | failures_then_success | a successful login after ≥ 2 failures in the previous 30 min | 0.3 |
 | login | `login.impossible-travel` | impossible_travel | a successful login whose distance from the account's last successful activity needs > 900 km/h | 0.7 |
 | login | `login.after-support-reset` | login_after_support_reset | a successful login within 60 min of a password reset via support | 0.7 |
-| device | `device.new-device` | new_device | a device that isn't in the profile and never appeared on the account | 0.3 |
+| device | `device.new-device` | new_device | a device that isn't in the profile and was never used on the account. Failed logins don't count, in either direction: they don't show the device got in. | 0.4, so it's shared: the support agent's context rule needs it |
 | device | `device.shared` | shared_device | a device used by other accounts in the last 7 days | 0.5 for one other, 0.7 for two, 0.8 for three or more |
 | device | `device.rare-ua` | rare_user_agent | a browser string on < 2% of the devices in all profiles | 0.2 |
-| device | `device.new-after-reset` | new_device_after_reset | a new device within 60 min of any password reset on the account | 0.6 |
+| device | `device.new-after-reset` | new_device_after_reset | a password reset made from a new device, or a new device within 60 min of any reset | 0.6 |
 | txn | `txn.card-testing` | card_testing | a charge under ₹50 that makes ≥ 3 such charges at ≥ 3 merchants in 30 min | 0.6 |
 | txn | `txn.cash-out-after-testing` | card_testing | a charge of at least ₹10,000 within 60 min of ≥ 3 charges under ₹50 at ≥ 3 merchants | 0.8 |
 | txn | `txn.high-value-new-payee` | high_value_new_payee | a transfer of at least ₹50,000 to a new payee | 0.5, or 0.6 at ≥ ₹1,00,000 |
 | txn | `txn.payout-new-bank` | payout_new_bank | a payout to a new bank account | 0.4, or 0.6 at ≥ ₹50,000 |
 | txn | `txn.amount-anomaly` | amount_anomaly | at least ₹10,000 and ≥ 5× the median of ≥ 3 earlier transactions | 0.4 |
-| support | `support.weak-verification` | weak_verification | a reset or email-change request verified by KBA, or not verified | 0.5 (KBA), 0.6 (none) |
-| support | `support.caller-mismatch` | caller_mismatch | the caller's phone isn't on file | 0.3, or 0.4 if also outside the home city |
+| support | `support.weak-verification` | weak_verification | a reset or email-change request verified by KBA, or not verified; a failed check is its own case | 0.5 (KBA), 0.6 (none), 0.4 (failed) |
+| support | `support.caller-mismatch` | caller_mismatch | the caller's phone isn't on file, or the registered phone calls from outside the home city | 0.3 unknown phone, 0.4 unknown and away, 0.2 registered but away |
 | support | `support.sensitive-change` | sensitive_change | an email, phone, payout-method or 2FA change | 0.4 |
-| support | `support.change-after-new-device` (context) | sensitive_change | a sensitive change within 60 min of a recalled `new_device` signal on the account | 0.6 |
+| support | `support.change-after-new-device` (context) | sensitive_change | a sensitive change within 60 min after a recalled `new_device` signal from a successful login on the account (signals carry their `eventKind`) | 0.6 |
 
 Impossible travel compares successful activity only: failed attempts come from rotating proxies and don't place the user anywhere. Cities missing from `agents/geo.ts` produce no finding (`shortcut:` comment in code).
 
@@ -232,7 +232,7 @@ GitHub Actions on every push to `main` and every PR, Node 22 and 24:
 2. `npm run lint`: ESLint, with complexity ≤ 10 and the agent import boundary
 3. `npm run typecheck`
 4. `npm test`
-5. The committed `data/` matches `npm run generate`, and `knowledge/risk-rules.md` matches `npm run knowledge`, both checked with `git diff --exit-code`
+5. The committed `data/` matches `npm run generate` (`git diff --exit-code`). `knowledge/risk-rules.md` is checked by a unit test.
 
 TypeScript stays on 6.0.x until typescript-eslint supports 7 (it needs the TypeScript JavaScript API, which 7.0 dropped). Node 20 reached end of life in April 2026, so the floor is Node 22 (`engines`).
 
@@ -250,7 +250,7 @@ TypeScript stays on 6.0.x until typescript-eslint supports 7 (it needs the TypeS
 | # | Branch | Scope | Requirements | Base |
 | --- | --- | --- | --- | --- |
 | 1 | `docs/engineering-spec` | This document | | `main` |
-| 2 | `chore/ci` | ESLint (complexity, agent boundary), CI workflow, PR template, TypeScript 6.0, Node ≥ 22 | §1, §8 | `main` |
+| 2 | `chore/ci` | ESLint (complexity, agent boundary), CI workflow, PR template, TypeScript 6.0, Node ≥ 22 | §1, §8 | `docs/engineering-spec` |
 | 3 | `feat/event-store` | PGlite store, schema, history queries, no-future-data test | D4 | `chore/ci` |
 | 4 | `feat/detection-agents` | The four agents and their rules, `risk-rules.md` rendering, fraud playbooks, step-up policy text | A1–A6, C2 (text) | `feat/event-store` |
 | 5 | `feat/runner-off` | Local signal store, replay loop, run record, `npm run replay`, OFF integration test | R1, R4, R6 | `feat/detection-agents` |

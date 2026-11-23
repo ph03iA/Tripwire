@@ -31,9 +31,10 @@ export type History = {
   failedLogins(accountId: string, since: string): Promise<number>;
   lastActivity(accountId: string): Promise<LastActivity | null>;
   resetSince(accountId: string, since: string, channel?: "support"): Promise<boolean>;
+  /** Whether the device was used on the account. A failed login doesn't count: it doesn't show the device got in. */
   deviceSeenOnAccount(accountId: string, deviceId: string): Promise<boolean>;
   otherAccountsOnDevice(deviceId: string, accountId: string, since: string): Promise<number>;
-  smallCharges(accountId: string, since: string): Promise<{ count: number; merchants: number }>;
+  smallCharges(accountId: string, since: string): Promise<{ count: number; merchants: string[] }>;
   medianAmount(accountId: string): Promise<{ median: number | null; count: number }>;
 };
 
@@ -68,14 +69,15 @@ export async function openStore(): Promise<EventStore> {
       [accountId, since, channel ?? null]),
 
     deviceSeenOnAccount: (accountId, deviceId) => exists(
-      `select 1 from events where account_id = $1 and device_id = $2`, [accountId, deviceId]),
+      `select 1 from events where account_id = $1 and device_id = $2 and not (kind = 'login' and success = false)`, [accountId, deviceId]),
 
     otherAccountsOnDevice: async (deviceId, accountId, since) => (await one<{ n: number }>(
       `select count(distinct account_id)::int as n from events where device_id = $1 and account_id <> $2 and ts >= $3`,
       [deviceId, accountId, since])).n,
 
+    // A charge without a merchant still counts as a charge, but not as another merchant.
     smallCharges: (accountId, since) => one(
-      `select count(*)::int as count, count(distinct merchant_id)::int as merchants from events
+      `select count(*)::int as count, coalesce(array_agg(distinct merchant_id) filter (where merchant_id is not null), '{}') as merchants from events
          where account_id = $1 and type = 'card_charge' and amount_minor < 5000 and ts >= $2`, [accountId, since]),
 
     medianAmount: (accountId) => one(

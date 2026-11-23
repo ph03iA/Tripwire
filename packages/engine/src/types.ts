@@ -75,6 +75,28 @@ export type Label = {
   takeoverStep?: boolean; // the event where money leaves
 };
 
+export type AgentName = "login" | "device" | "txn" | "support";
+
+export type SignalType =
+  | "credential_stuffing" | "failures_then_success" | "impossible_travel" | "login_after_support_reset" // login
+  | "new_device" | "shared_device" | "rare_user_agent" | "new_device_after_reset" // device
+  | "card_testing" | "high_value_new_payee" | "payout_new_bank" | "amount_anomaly" // txn
+  | "weak_verification" | "caller_mismatch" | "sensitive_change"; // support
+
+/** One agent's risk judgment about one event. Written to shared memory when its score is ≥ 0.4 (PRD A5). */
+export type RiskSignal = {
+  agent: AgentName;
+  ruleId: string;
+  type: SignalType;
+  score: number; // 0..1
+  accountId: string;
+  eventId: string;
+  eventKind: TripwireEvent["kind"]; // what kind of event the signal is about, so a reader can't mistake it for a login
+  ts: string;
+  entities: { ip?: string; deviceId?: string; payeeId?: string; merchantId?: string };
+  evidence: string; // one sentence
+};
+
 /** What the payments app knows about a customer before the stream starts. Agents may read it. */
 export type AccountProfile = {
   id: string;
