@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { generate } from "../generator/generate.js";
+import type { TripwireEvent } from "../types.js";
 import { replay, replayStream, type RunRecord } from "./replay.js";
 
 const { events, labels, accounts } = generate(42);
@@ -68,4 +69,32 @@ test("a broken input fails the run and says why, instead of passing as a partial
   assert.equal(record.status, "failed");
   assert.match(record.error ?? "", /has no profile/);
   assert.equal(record.events, 0);
+});
+
+// Two hand-built events for one real account, on its own known phone at home.
+const acc = accounts[0]!;
+const own = { accountId: acc.id, ip: "49.36.1.1", geo: acc.home, deviceId: acc.knownDevices[0]!.id, userAgent: acc.knownDevices[0]!.userAgent };
+const reset = (id: string, ts: string) => ({ ...own, id, ts, kind: "password_reset", channel: "support" }) as TripwireEvent;
+const login = (id: string, ts: string) => ({ ...own, id, ts, kind: "login", success: true, method: "password" }) as TripwireEvent;
+const payout = (id: string, ts: string) =>
+  ({ ...own, id, ts, kind: "transaction", type: "payout", amountMinor: 2_000_000, currency: "INR", payeeId: "bnk_new", payeeIsNew: true, status: "approved" }) as TripwireEvent;
+
+test("out-of-order input fails before anything is scored, instead of using future evidence", async () => {
+  // Regression: a login at 01:10 used to score login.after-support-reset (0.7) from a reset at 01:30.
+  const record = await replayStream({ seed: 0, accounts: [acc], events: [reset("r", "2026-11-03T01:30:00.000Z"), login("l", "2026-11-03T01:10:00.000Z")] });
+  assert.equal(record.status, "failed");
+  assert.match(record.error ?? "", /time order/);
+  assert.deepEqual(record.findings, []);
+
+  const sameTime = await replayStream({ seed: 0, accounts: [acc], events: [reset("r", "2026-11-03T01:30:00.000Z"), login("l", "2026-11-03T01:30:00.000Z")] });
+  assert.equal(sameTime.status, "ok", "equal timestamps keep their input order");
+});
+
+test("a failed insert publishes nothing from that event, so the record's counts agree", async () => {
+  const one = await replayStream({ seed: 0, accounts: [acc], events: [payout("dup", "2026-11-03T05:00:00.000Z")] });
+  const twice = await replayStream({ seed: 0, accounts: [acc], events: [payout("dup", "2026-11-03T05:00:00.000Z"), payout("dup", "2026-11-03T05:01:00.000Z")] });
+  assert.equal(twice.status, "failed");
+  assert.equal(twice.events, 1);
+  assert.equal(twice.signals.length, one.signals.length, "only the stored event's signals");
+  assert.equal(twice.findings.length, one.findings.length, "only the stored event's findings");
 });
