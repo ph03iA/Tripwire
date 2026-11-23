@@ -39,7 +39,7 @@ export async function mcpOver(transport: Transport, wait?: Wait): Promise<Mcp> {
     call: (tool, args, op) =>
       withRetry(tool, op, async () => {
         calls.set(tool, (calls.get(tool) ?? 0) + 1);
-        return answerOf(tool, await client.callTool({ name: tool, arguments: args }, undefined, { timeout: TIMEOUT_MS }));
+        return answerOf(tool, op, await client.callTool({ name: tool, arguments: args }, undefined, { timeout: TIMEOUT_MS }));
       }, wait),
     // shortcut: first page only; follow nextCursor if Meko ever pages its tool list.
     tools: async () => (await client.listTools(undefined, { timeout: TIMEOUT_MS })).tools,
@@ -51,19 +51,26 @@ type ToolResult = Awaited<ReturnType<Client["callTool"]>>;
 
 /**
  * Meko's tools answer with a JSON string (structuredContent only wraps the same string as `{ result }`), so the text
- * is parsed when it is JSON. A tool error, or an answer carrying `error` (e.g. `datapack_id_required`), throws.
+ * is parsed when it is JSON. A tool error, or an answer carrying `error` (e.g. `datapack_id_required`), throws. So does
+ * a `write-once` answer that isn't a JSON object: without a readable receipt, the write may or may not have happened.
  */
-function answerOf(tool: string, result: ToolResult): unknown {
-  const text = Array.isArray(result.content)
-    ? result.content.flatMap((c: { type?: string; text?: string }) => (c.type === "text" && c.text ? [c.text] : [])).join("\n")
-    : "";
+function answerOf(tool: string, op: Op, result: ToolResult): unknown {
+  const text = textOf(result);
   if (result.isError) throw new MekoError(`${tool}: ${text || "tool error"}`);
-  const answer = parseJson(text) ?? result.structuredContent ?? text;
+  const json = parseJson(text);
+  const answer = json ?? result.structuredContent ?? text;
   if (hasError(answer)) throw new MekoError(`${tool}: ${typeof answer.error === "string" ? answer.error : JSON.stringify(answer.error)}`);
+  // Not a MekoError, so the retry policy treats it as an unknown outcome, not a refusal.
+  if (op === "write-once" && !isObject(json)) throw new Error(`${tool}: no readable receipt (${text.length} characters of text)`);
   return answer;
 }
 
-const hasError = (x: unknown): x is { error: unknown } => typeof x === "object" && x !== null && "error" in x && x.error != null;
+const textOf = (result: ToolResult) =>
+  Array.isArray(result.content)
+    ? result.content.flatMap((c: { type?: string; text?: string }) => (c.type === "text" && c.text ? [c.text] : [])).join("\n")
+    : "";
+const isObject = (x: unknown): x is object => typeof x === "object" && x !== null;
+const hasError = (x: unknown): x is { error: unknown } => isObject(x) && "error" in x && x.error != null;
 
 function parseJson(text: string): unknown {
   try {

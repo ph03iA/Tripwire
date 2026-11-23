@@ -2,13 +2,13 @@
 // Everything is written to its own datapack, tripwire-spike, which must already exist: the script never creates one.
 // Each check saves its calls to runs/spike/<check>.json, and every run appends its attempts to runs/spike/attempts.jsonl.
 // Never run in tests or CI: it spends real quota.
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { type MekoConfig, mekoConfig } from "../config.js";
 import { connectMcp, type Mcp } from "./mcp.js";
-import type { Op } from "./retry.js";
+import { classify, type Op } from "./retry.js";
 import { type Rest, restClient } from "./rest.js";
 
 const OUT = fileURLToPath(new URL("../../../../runs/spike/", import.meta.url));
@@ -42,17 +42,18 @@ const mentions = (out: unknown, text: string) => JSON.stringify(out).includes(te
 /** One MCP call, in the spike datapack unless `args` names another, recorded with its time and answer. */
 async function call(ctx: Ctx, tool: string, args: Record<string, unknown>, op: Op = "read"): Promise<unknown> {
   const full = { datapack_id: ctx.datapackId, ...args };
+  // Another datapack holds data the spike didn't write: its answers aren't saved, and its errors only as a status.
+  const own = full.datapack_id === ctx.datapackId;
   const record: Call = { tool, args: brief(full), ms: 0 };
   ctx.calls.push(record);
   const t0 = performance.now();
   try {
     const out = await ctx.mcp.call(tool, full, op);
-    // An answer from another datapack holds data the spike didn't write, so it isn't saved.
-    if (full.datapack_id === ctx.datapackId) record.out = out;
+    if (own) record.out = out;
     return out;
   } catch (err) {
-    record.error = err instanceof Error ? err.message : String(err);
-    throw err;
+    record.error = own ? (err instanceof Error ? err.message : String(err)) : `failed (${classify(err)})`;
+    throw own ? err : new Error(`${tool} in another datapack ${record.error}`);
   } finally {
     record.ms = Math.round(performance.now() - t0);
   }
@@ -277,14 +278,20 @@ async function k10(ctx: Ctx) {
 
 /**
  * K11: searches tagged with a case's conversation_id, in this datapack and, with the pattern search, in
- * tripwire-patterns (the other datapack the design searches), to look for in the case's portal trace.
+ * tripwire-patterns (the other datapack the design searches), to look for in the case's portal trace. Every search
+ * must succeed: a failed one fails the check, naming the case, since its trace can't answer K11.
  */
 async function k11(ctx: Ctx) {
   const patterns = (await datapacks(ctx.rest)).find((d) => d.datapack_name === PATTERNS_DATAPACK);
   if (!patterns) throw new Error(`${PATTERNS_DATAPACK} doesn't exist yet: K11 runs once the working datapacks do`);
   const caseRun = await conversation(ctx, "k11 case: check its trace in the portal", AGENT.decision);
   const search = (tool: string, datapackId = ctx.datapackId) =>
-    call(ctx, tool, { datapack_id: datapackId, query: "risk signals about device dev_k11", conversation_id: caseRun, agent_id: AGENT.decision, limit: 3 }).then(() => "ok", (err: Error) => err.message);
+    call(ctx, tool, { datapack_id: datapackId, query: "risk signals about device dev_k11", conversation_id: caseRun, agent_id: AGENT.decision, limit: 3 }).then(
+      () => "ok",
+      (err: Error) => {
+        throw new Error(`case ${caseRun}: ${err.message}, so its trace can't answer K11 yet`);
+      },
+    );
   return {
     caseRun,
     memorySearch: await search("memory_search"),
@@ -306,9 +313,13 @@ async function inventory(ctx: Ctx) {
   return Object.fromEntries(groups);
 }
 
-/** K8: what every spike run sent, by tool and retries included, from the attempts log. The portal shows what counted. */
-async function k8() {
-  const runs = readFileSync(ATTEMPTS, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as { mcp: Record<string, number> });
+/**
+ * K8: what every spike run sent, by tool and retries included: the attempts log, plus this run so far (it is appended
+ * only when the run ends, so it's counted once). The portal shows what Meko counted.
+ */
+async function k8({ mcp }: Ctx) {
+  const logged = existsSync(ATTEMPTS) ? readFileSync(ATTEMPTS, "utf8").split("\n").filter(Boolean) : [];
+  const runs = [...logged.map((line) => JSON.parse(line) as { mcp: Record<string, number> }), { mcp: Object.fromEntries(mcp.calls) }];
   const byTool = new Map<string, number>();
   for (const run of runs) {
     for (const [tool, n] of Object.entries(run.mcp)) byTool.set(tool, (byTool.get(tool) ?? 0) + n);
@@ -342,6 +353,13 @@ async function spikeDatapack(rest: Rest): Promise<string> {
 }
 
 const CHECKS: Record<string, (ctx: Ctx) => Promise<unknown>> = { k1, k2, k3, k4, k5, k6, k7, k8, k9, k10, k11, inventory };
+/** k8 reads the attempts log and k9 only lists, so neither needs the spike datapack or fails without it. */
+const WITHOUT_DATAPACK = new Set(["k8", "k9"]);
+
+async function runCheck(id: string, ctx: Ctx) {
+  if (!WITHOUT_DATAPACK.has(id)) ctx.datapackId ||= await spikeDatapack(ctx.rest);
+  return CHECKS[id]!(ctx);
+}
 
 const wanted = process.argv.slice(2);
 const unknown = wanted.filter((id) => !CHECKS[id]);
@@ -355,11 +373,11 @@ const cfg = mekoConfig();
 const mcp = await connectMcp(cfg);
 const rest = restClient(cfg);
 try {
-  const ctx: Ctx = { cfg, mcp, rest, datapackId: await spikeDatapack(rest), calls: [] };
+  const ctx: Ctx = { cfg, mcp, rest, datapackId: "", calls: [] };
   for (const id of wanted) {
     ctx.calls = [];
     const t0 = Date.now();
-    const result = await CHECKS[id]!(ctx).catch((err: Error) => {
+    const result = await runCheck(id, ctx).catch((err: Error) => {
       process.exitCode = 1;
       return failure(err);
     });

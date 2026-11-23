@@ -5,10 +5,11 @@ import { test } from "node:test";
 import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { mekoConfig, USER_AGENT } from "../config.js";
 import { connectMcp, mcpOver } from "./mcp.js";
 import { restClient } from "./rest.js";
-import { classify, MekoError, UnknownOutcomeError, withRetry } from "./retry.js";
+import { classify, MekoError, retryAfterMs, UnknownOutcomeError, withRetry } from "./retry.js";
 
 const KEY = "mko_tkn_test_123";
 const env = (extra: Record<string, string> = {}) => ({ MEKO_API_KEY: KEY, ...extra });
@@ -40,6 +41,7 @@ test("retries follow the operation: reads retry, writes that could duplicate are
   assert.equal(await withRetry("t", "write-once", flaky([s429]), noWait), "ok", "a 429 was refused, so resending is safe");
   await assert.rejects(withRetry("t", "write-once", flaky([s503]), noWait), UnknownOutcomeError);
   await assert.rejects(withRetry("t", "write-once", flaky([new TypeError("fetch failed")]), noWait), UnknownOutcomeError);
+  await assert.rejects(withRetry("t", "write-once", flaky([new McpError(ErrorCode.InternalError, "boom")]), noWait), UnknownOutcomeError, "the server failed after taking the call");
   await assert.rejects(withRetry("t", "read", flaky([s400]), noWait), (e) => e === s400);
   await assert.rejects(withRetry("t", "read", flaky([s503, s503, s503]), noWait), (e) => e === s503, "gives up after 3 attempts");
 
@@ -51,6 +53,16 @@ test("retries follow the operation: reads retry, writes that could duplicate are
   assert.equal(classify(new StreamableHTTPError(-1, "Unexpected content type: text/html")), "transient", "a success that can't be read");
   assert.equal(classify(new MekoError("refused: datapack_id_required")), "permanent", "the tool's own answer");
   assert.equal(classify(new Error("something else")), "transient", "only a clear refusal is permanent");
+
+  const after = (value: string) => new Response(null, { status: 429, headers: { "Retry-After": value } });
+  const now = Date.parse("Tue, 24 Nov 2026 10:00:00 GMT");
+  assert.equal(retryAfterMs(after("120"), now), 120_000);
+  assert.equal(retryAfterMs(after("Tue, 24 Nov 2026 10:01:30 GMT"), now), 90_000, "an HTTP date works too");
+  assert.equal(retryAfterMs(after("soon"), now), undefined);
+  const tooLong = new MekoError("slow down", 429, 120_000);
+  waits.length = 0;
+  await assert.rejects(withRetry("t", "read", flaky([tooLong]), async (ms) => void waits.push(ms)), (e) => e === tooLong);
+  assert.deepEqual(waits, [], "a wait over a minute surfaces the 429 instead of retrying early");
 });
 
 test("REST: sends the key and User-Agent only to the API, unwraps { data }, turns { error } into a MekoError, retries per operation", async () => {
@@ -89,9 +101,11 @@ test("REST: sends the key and User-Agent only to the API, unwraps { data }, turn
   }
 });
 
-test("MCP: parses JSON answers, keeps plain text, raises tool errors and in-band errors, counts calls by tool", async () => {
+test("MCP: parses JSON answers, keeps plain text for reads, raises tool errors and in-band errors, needs a receipt for a write, counts calls by tool", async () => {
   const server = new McpServer({ name: "fake-meko", version: "1.0.0" });
   server.registerTool("memory_add", { description: "fake" }, async () => ({ content: [{ type: "text", text: JSON.stringify({ id: "m1" }) }] }));
+  server.registerTool("add_truncated", { description: "fake" }, async () => ({ content: [{ type: "text", text: '{"results":[{"id":"m1","mem' }] }));
+  server.registerTool("add_empty", { description: "fake" }, async () => ({ content: [] }));
   server.registerTool("plain", { description: "fake" }, async () => ({ content: [{ type: "text", text: "not json" }] }));
   server.registerTool("broken", { description: "fake" }, async () => ({ content: [{ type: "text", text: "datapack not found" }], isError: true }));
   server.registerTool("refused", { description: "fake" }, async () => ({ content: [{ type: "text", text: JSON.stringify({ error: "datapack_id_required" }) }] }));
@@ -103,7 +117,11 @@ test("MCP: parses JSON answers, keeps plain text, raises tool errors and in-band
     assert.equal(await mcp.call("plain", {}, "read"), "not json");
     await assert.rejects(mcp.call("broken", {}, "read"), /broken: datapack not found/);
     await assert.rejects(mcp.call("refused", {}, "write-once"), (e: MekoError) => e.message === "refused: datapack_id_required" && !(e instanceof UnknownOutcomeError));
-    assert.deepEqual((await mcp.tools()).map((t) => t.name).sort(), ["broken", "memory_add", "plain", "refused"]);
+    for (const tool of ["add_truncated", "add_empty"]) {
+      await assert.rejects(mcp.call(tool, {}, "write-once"), UnknownOutcomeError, `${tool}: a write without a readable receipt`);
+      assert.equal(mcp.calls.get(tool), 1, "never resent");
+    }
+    assert.deepEqual((await mcp.tools()).map((t) => t.name).sort(), ["add_empty", "add_truncated", "broken", "memory_add", "plain", "refused"]);
     assert.equal(mcp.calls.get("memory_add"), 1);
   } finally {
     await mcp.close();
