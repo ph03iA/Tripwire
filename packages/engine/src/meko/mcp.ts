@@ -52,7 +52,7 @@ type ToolResult = Awaited<ReturnType<Client["callTool"]>>;
 /**
  * Meko's tools answer with a JSON string (structuredContent only wraps the same string as `{ result }`), so the text
  * is parsed when it is JSON. A tool error, or an answer carrying `error` (e.g. `datapack_id_required`), throws. So does
- * a `write-once` answer that isn't a JSON object: without a readable receipt, the write may or may not have happened.
+ * a `write-once` answer without its receipt: then the write may or may not have happened.
  */
 function answerOf(tool: string, op: Op, result: ToolResult): unknown {
   const text = textOf(result);
@@ -61,9 +61,19 @@ function answerOf(tool: string, op: Op, result: ToolResult): unknown {
   const answer = json ?? result.structuredContent ?? text;
   if (hasError(answer)) throw new MekoError(`${tool}: ${typeof answer.error === "string" ? answer.error : JSON.stringify(answer.error)}`);
   // Not a MekoError, so the retry policy treats it as an unknown outcome, not a refusal.
-  if (op === "write-once" && !isObject(json)) throw new Error(`${tool}: no readable receipt (${text.length} characters of text)`);
+  if (op === "write-once" && !hasReceipt(tool, json)) throw new Error(`${tool}: no receipt in the answer (${text.length} characters of text)`);
   return answer;
 }
+
+/** The receipt a write must answer with to count as done; any other write needs at least a JSON object. */
+const hasReceipt = (tool: string, json: unknown) => (RECEIPTS[tool] ?? isObject)(json);
+const RECEIPTS: Record<string, (json: unknown) => boolean> = {
+  // { results: [{ id, memory, event: "ADD" }] } (K1): without the ID, the signal can't be confirmed or trusted (R8).
+  memory_add: (json) => {
+    const id = isObject(json) && "results" in json && Array.isArray(json.results) ? json.results[0]?.id : undefined;
+    return typeof id === "string" && id !== "";
+  },
+};
 
 const textOf = (result: ToolResult) =>
   Array.isArray(result.content)

@@ -314,18 +314,22 @@ async function inventory(ctx: Ctx) {
 }
 
 /**
- * K8: what every spike run sent, by tool and retries included: the attempts log, plus this run so far (it is appended
- * only when the run ends, so it's counted once). The portal shows what Meko counted.
+ * K8: what every spike run sent, by tool and retries included: the attempts log, plus `current`, this run's attempts
+ * so far (appended only when the run ends, so they're counted once). The portal shows what Meko counted.
  */
-async function k8({ mcp }: Ctx) {
-  const logged = existsSync(ATTEMPTS) ? readFileSync(ATTEMPTS, "utf8").split("\n").filter(Boolean) : [];
-  const runs = [...logged.map((line) => JSON.parse(line) as { mcp: Record<string, number> }), { mcp: Object.fromEntries(mcp.calls) }];
+function tally(current: Map<string, number>) {
+  const lines = existsSync(ATTEMPTS) ? readFileSync(ATTEMPTS, "utf8").split("\n").filter(Boolean) : [];
+  const logged = lines.map((line) => (JSON.parse(line) as { mcp: Record<string, number> }).mcp);
   const byTool = new Map<string, number>();
-  for (const run of runs) {
-    for (const [tool, n] of Object.entries(run.mcp)) byTool.set(tool, (byTool.get(tool) ?? 0) + n);
+  for (const run of [...logged, Object.fromEntries(current)]) {
+    for (const [tool, n] of Object.entries(run)) byTool.set(tool, (byTool.get(tool) ?? 0) + n);
   }
   const sum = (tools: string[]) => tools.reduce((n, tool) => n + (byTool.get(tool) ?? 0), 0);
-  return { runs: runs.length, byTool: Object.fromEntries(byTool), retrievals: sum(RETRIEVALS), conversationMessages: sum(["conversation_add_message"]) };
+  return { loggedRuns: logged.length, byTool: Object.fromEntries(byTool), retrievals: sum(RETRIEVALS), conversationMessages: sum(["conversation_add_message"]) };
+}
+
+async function k8({ mcp }: Ctx) {
+  return tally(mcp.calls);
 }
 
 /** K9: Node connects with our headers: MCP lists its tools and REST answers. Nothing is written. */
@@ -369,6 +373,13 @@ if (wanted.length === 0 || unknown.length > 0) {
 }
 mkdirSync(OUT, { recursive: true });
 const ranAt = new Date().toISOString();
+if (wanted.every((id) => id === "k8")) {
+  // K8 alone only reads the attempts log: no key, no network, and no attempts of its own to append.
+  const result = tally(new Map());
+  save("k8", { ranAt, ms: 0, result, calls: [] });
+  console.log(`k8: ${JSON.stringify(result)}`);
+  process.exit(0);
+}
 const cfg = mekoConfig();
 const mcp = await connectMcp(cfg);
 const rest = restClient(cfg);
