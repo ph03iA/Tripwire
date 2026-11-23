@@ -63,6 +63,7 @@ Exit check: `npm run replay -- --seed 42 --meko off` writes signals and a `runs/
 | Traces: one Meko conversation per case, a turn per flagged decision, searches carrying the case `conversation_id`; daily allow ledger | C4, C5 |
 | Memory hygiene: fact-free user turns, ID-based trust, end-of-run audit | R8 |
 | `metrics.ts`: prevented and caught-early per chain, from what the runner executed | §8 |
+| Dry run first: `--meko dry` reports the conversation calls and searches a run needs, checked against the ceiling | R7, §9 |
 | Two live ON runs on seed 42 | |
 
 ### M3 Memory pays off (Dec 14–20)
@@ -141,8 +142,8 @@ Every check runs from one spike script against the real Meko account. The answer
 
 | Resource | Free limit | Per ON run | Notes |
 | --- | --- | --- | --- |
-| Conversation calls | 1,000 / month | ~100 expected, 120 ceiling | Flagged decisions (~60), case files (~20), allow ledger (14), approvals |
-| Searches | 10,000 / month | ≤ 800 | Agent recall (~300), a signal check on each sensitive event (~240), decision context (~120) |
+| Conversation calls | 1,000 / month | 120 ceiling | STEP-UP and BLOCK traces, case files, allow ledger (14), approvals. Measured by the M2 dry run before the first ON run. |
+| Searches | 10,000 / month | ≤ 800 | Agent recall, plus a signal check on each decision trigger (275 on seed 42). Measured by the M2 dry run. |
 | Datapacks | 10 ever | 2 working, up to 6 for evaluation | Deleting one doesn't free its slot |
 | Knowledge storage | 100 MB | < 1 MB | A handful of markdown files |
 

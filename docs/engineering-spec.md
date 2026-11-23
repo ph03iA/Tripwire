@@ -185,7 +185,17 @@ These are fixed now so that earlier code doesn't box them in; each lands in its 
 - **Meko client (M0):**
   - MCP through `@modelcontextprotocol/sdk` (`StreamableHTTPClientTransport`). REST through `fetch`.
   - Both send `Authorization: Bearer` and `User-Agent: tripwire/<version>`, with a 10 s timeout.
-  - Retries: 3 attempts with exponential backoff and jitter (0.5 s → 4 s), honoring `Retry-After`, on 429, 5xx and network errors only. Other 4xx fail at once.
+  - **Retries depend on the operation**, because a write whose response is lost may still have been saved, and `memory_add` stores duplicates:
+
+    | Operation | On 429 | On 5xx, timeout or network error |
+    | --- | --- | --- |
+    | Reads: searches, gets, lists, document status | Retry | Retry |
+    | Idempotent writes: `artifact_put` (keyed by content hash), datapack create (a repeat returns 409) | Retry | Retry |
+    | `memory_add` | Retry (the request was refused, not processed) | Don't resend. Search for the signal's stable key (event ID + rule ID, written into its text). Re-add only if it's missing. |
+    | `POST /promote-memories` | Retry | Check the promoted list for the ID first; promote again only if it's absent |
+    | `conversation_add_message`, `conversation_create` | Retry | No way to check, so mark the run `incomplete` with the event ID. Never resend blindly. |
+
+    Retries use 3 attempts with exponential backoff and jitter (0.5 s → 4 s) and honor `Retry-After`. Other 4xx responses fail at once.
   - Every response is checked by a type guard before use. An unexpected shape is an error, not a guess.
   - Every call is counted for the quota ledger (R7).
 - **ON signal store (M2):** `memory_add` with `agent_id` and metadata. Recall uses `memory_search`. A result counts only if its ID was written by this run (provenance, R8), it names the same entity, and it falls inside the 72-hour window. Every search becomes a `Retrieval` record (C3).
@@ -193,6 +203,11 @@ These are fixed now so that earlier code doesn't box them in; each lands in its 
   - Triggers per C1. Risk is the noisy-OR of the strongest signal per type in 72 h.
   - Policy: ≥ 0.8 BLOCK, 0.5–0.8 STEP-UP, else ALLOW. A known device plus travel alone is capped at STEP-UP.
   - The reason is a template over the decision record, so nothing is generated text.
+  - **Traces:**
+    - Each STEP-UP and BLOCK gets its own trace turn (C4).
+    - Every ALLOW, with or without signals, goes into the daily allow ledger with its reason, signals and searches (C5).
+    - Seed 42 has 275 decision triggers, 90 of them with a shared signal on the event itself. One turn per signal-backed ALLOW wouldn't fit the 120-call ceiling, while STEP-UPs and BLOCKs should number in the tens.
+- **Dry run (M2, before the first ON run):** `--meko dry` runs the whole ON pipeline against an in-process stand-in for Meko and reports the conversation calls and searches the run would make. The quota guard and the PRD §9 ceiling are checked against these measured numbers, not estimates.
 - **Outcomes (M2):** R2 and R3. The runner decides OTP outcomes from the labels, and records attempted versus executed takeover events. Prevention is computed from execution (PRD §8).
 - **Quota guard (M2):** `runs/quota.json` keeps a per-month ledger of conversation calls and searches. An ON run refuses to start when its ceiling (PRD §9) doesn't fit the remainder.
 - **Learning loop (M3):** L1–L4 exactly as the PRD states, including the approval conversation and confirmation in the promoted list.
