@@ -38,8 +38,8 @@ Requirement IDs (D1, A1, C1, …) refer to the [PRD](prd.md). In the tables, **Y
 | ✅ Create an empty public GitHub repo; then the existing history gets pushed to it | You | Submission |
 | Ask on the Meko Discord: is AMP Postgres on the Free plan, when does the monthly quota reset, and are hackathon credits available? | You | K5, K8 |
 | ✅ Meko client in `packages/engine/src/meko/`: MCP (memory, knowledge base, conversations) and REST (datapacks, uploads, artifacts, promotion) | | K9 |
-| Create the working datapacks: waits on the layout decision in [spikes](spikes.md#datapacks-proposal) | | §7 |
-| ✅ Spike script that answers K1–K11; results written to [`docs/spikes.md`](spikes.md). Still open: portal checks for K7, K8 and K11, and the reset date (K8) | | K1–K11 |
+| Create the working datapacks, `tripwire-signals` and `tripwire-patterns`. Needs your OK: they use 2 of the 8 slots left ([budget](spikes.md#datapacks-budget)) | | §7 |
+| ✅ Spike script that answers K1–K11; results written to [`docs/spikes.md`](spikes.md). Still open: K11 (re-run once `tripwire-patterns` exists, then check its trace in the portal), the portal checks for K7 and K8, and the reset date (K8) | | K1–K11 |
 | ✅ Update `design.md` with the answers | | |
 
 ### M1 Data and agents, OFF mode (Nov 30–Dec 6)
@@ -144,7 +144,7 @@ Every check runs from one spike script against the real Meko account (`npm run s
 | --- | --- | --- | --- |
 | Conversation calls | 1,000 / month | 120 ceiling | STEP-UP and BLOCK traces, case files, allow ledger (14), approvals. Measured by the M2 dry run before the first ON run. |
 | Searches | 10,000 / month | ≤ 800 | Agent recall, plus a signal check on each decision trigger (275 on seed 42). Measured by the M2 dry run. |
-| Datapacks | 10 ever | 2 working, up to 6 for evaluation | Deleting one doesn't free its slot. 2 are used (the default one and `tripwire-spike`), and promoted patterns can't be deleted (K7), so this layout uses all 10; see the [proposal](spikes.md#datapacks-proposal) |
+| Datapacks | 10 ever | 2 working, 6 for evaluation | Deleting one doesn't free its slot. 2 are used (the default one and `tripwire-spike`), and promoted patterns can't be deleted (K7), so this uses all 10, with none spare; see the [budget](spikes.md#datapacks-budget) |
 | Knowledge storage | 100 MB | < 1 MB | A handful of markdown files |
 
 All development runs use OFF mode, which makes no Meko calls. ON runs are kept for integration checks and evaluation:

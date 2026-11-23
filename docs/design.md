@@ -41,7 +41,7 @@ Datapacks:
 - `signals`: signals, case conversations and the allow ledger. Cleared at the start of every ON run. Each run writes its signals under its own run conversation and recalls them with `run_id`, so runs never mix (K2).
 - `patterns`: playbooks, rules, policy, and approved patterns, which are its only memories. A promoted pattern can't be deleted (K7), so each evaluation run gets a fresh `patterns` datapack.
 
-A simpler layout, one datapack per world, is proposed in [spikes](spikes.md#datapacks-proposal) and waits on a decision.
+The brief asks for these two to stay separate. With a fresh `patterns` datapack for each evaluation run, they use all 10 of the Free plan's datapacks: see the [budget](spikes.md#datapacks-budget).
 
 ### Meko ON vs OFF
 

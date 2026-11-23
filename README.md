@@ -39,7 +39,7 @@ OFF mode needs no account and makes no network calls. ON mode, with shared Meko 
 ```bash
 npm run spike -- k9      # needs MEKO_API_KEY in .env; one week-1 check per argument, k1 … k11
 ```
-The checks run against your real Meko account, in their own `tripwire-spike` datapack, and spend real quota. Run one only to re-check an answer in [docs/spikes.md](docs/spikes.md).
+The checks run against your real Meko account and spend real quota. They write only to their own `tripwire-spike` datapack, which must already exist (K11 also searches `tripwire-patterns`). Run one only to re-check an answer in [docs/spikes.md](docs/spikes.md).
 
 ## Results: Meko ON vs OFF
 Held-out seeds 101–105; definitions in the [PRD](docs/prd.md#8-evaluation).

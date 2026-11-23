@@ -11,13 +11,13 @@ Read from docs.mekodata.ai on 2026-11-22. Pages: Datapack API, MCP Server refere
 | Search playbooks, rules and approved patterns | **MCP** | `knowledgebase_search` (hybrid semantic + keyword). It is the only search that finds promoted patterns (K3). |
 | Decision traces | **MCP** | `conversation_create`, `conversation_add_message` (with `reasoning` and `plan`). `track_token_usage` exists for LLM spend, but Tripwire makes no LLM calls. |
 | Create datapacks | REST | `POST /datapacks`. MCP's `datapack_create` also needs a conversation, which needs a datapack (K9). |
-| Upload playbooks to the knowledge base | REST | `POST /datapacks/{id}/knowledge-bases/upload-url`, then a multipart POST to storage, then poll `status_url` |
+| Upload playbooks to the knowledge base | REST | `POST /datapacks/{id}/knowledge-bases/upload-url`, then a multipart POST to storage (without the Meko key: the REST client sends it only to the API), then poll `status_url` |
 | Incident reports and pattern drafts | REST | `POST /datapacks/{id}/artifacts`, `GET /datapacks/{id}/artifacts/{content_hash}` |
 | Analyst approval → learning | MCP | `memory_add` linked to an approval conversation, then `memory_promote`. REST `POST /promote-memories` does the same. |
 
 The REST API has **no** memory-add, memory-search or knowledge-search endpoints. Those exist only over MCP.
 
-- MCP URL: `https://mcp.mekodata.ai/mcp`. From TS: `@modelcontextprotocol/sdk` `Client` + `StreamableHTTPClientTransport`, calling `client.callTool({ name, arguments })`.
+- MCP URL: `https://mcp.mekodata.ai/mcp`. From TS: `@modelcontextprotocol/sdk` `Client` + `StreamableHTTPClientTransport`, calling `client.callTool({ name, arguments })`. The SDK drops a 429's headers, so the client reads `Retry-After` in its own `fetch` wrapper first.
 - REST base: `https://api.mekodata.ai/api/v1`. OpenAPI 3.1 at `https://api.mekodata.ai/openapi.json`.
 - Auth on both: `Authorization: Bearer mko_tkn_…` (from **Settings > API Keys**) **and** a `User-Agent` header. Without a User-Agent the WAF returns 403.
 - REST responses: `{ data, error }`, and `data` is `null` on error.
@@ -53,12 +53,12 @@ A 2,000-event run can't call Meko for every event. Agents score events locally, 
 
 Found by the [week-1 checks](spikes.md) on 2026-11-23, beyond what the docs say:
 
-- **Every MCP tool needs a `conversation_id`**, even where its schema marks it optional: `datapack_create` and the `amp_*` tools answer `conversation_id_required`.
+- **`datapack_create` and the `amp_*` tools need a `conversation_id`**, although their schemas mark it optional: they answer `conversation_id_required`. `conversation_create` works without one. Every other tool was always called with one, so whether it needs it is unknown (K9).
 - **Tools answer with a JSON string.** `structuredContent` only wraps the same string as `{ result }`. Some failures arrive inside a normal answer as `{"error": …}`.
-- **`memory_add` stores the text verbatim** and returns it with its ID (`results[0].id`). It is searchable as soon as the call returns (K1). Metadata comes back on search.
+- **`memory_add` stores the text verbatim** and returns it with its ID (`results[0].id`). K1 found one on the first search, 1.1 s after the call returned. That is one sample, so it sets no upper bound. Metadata comes back on search.
 - **`memory_search` drops rows under a raw similarity of 0.2** but returns unrelated rows above it, so callers must check the entity themselves.
 - **`context_search`'s `knowledge_base` bucket doesn't include promoted patterns.** `knowledgebase_search` returns them, with `metadata_filters.source: "memory"` and the approval conversation's ID as `document_id` (K3).
 - **Promoted memories leave the private store and can't be deleted.** `memory_delete_by_id` answers `memory_is_promoted`, and they aren't knowledge-base files (K7).
 - **Conversation turns are mined for memories.** Within about 30 s, Meko saves one memory from a turn's user input, under the conversation's agent ID and tagged with the conversation. Nothing came from `output` or `reasoning` (K6).
-- **Conversation writes dedupe.** The same `seed` returns the same message ID and stores one message, and the same `session_id` returns the same conversation (K10). A 13 KB turn is stored whole.
+- **Conversation writes dedupe.** The same `seed` returns the same message ID and stores one message, and the same `session_id` returns the same conversation (K10). A 13 KB turn is stored whole. Each call can still be mined for a memory of its own, so a retry can leave an extra one (K6, K10).
 - **Some answers carry the account owner's name and email** (`memory_get_all` rows, `GET /datapacks`), so raw answers are never logged.

@@ -264,7 +264,7 @@ The judges weight Meko use at 30% and ask for every part of it. Each row below i
 | Area | Requirement |
 | --- | --- |
 | Cost | $0: Meko Free plan, no paid APIs |
-| Meko quota | Per ON run: at most 120 conversation calls (STEP-UP and BLOCK traces, case files, 14 allow-ledger turns) and 800 searches, checked by the M2 dry run before the first ON run. At most 8 of the 10 lifetime datapack slots: 2 working ones, plus up to 6 fresh `patterns` datapacks if old patterns can't be deleted between evaluation runs. |
+| Meko quota | Per ON run: at most 120 conversation calls (STEP-UP and BLOCK traces, case files, 14 allow-ledger turns) and 800 searches, checked by the M2 dry run before the first ON run. All 10 lifetime datapack slots: the default one and `tripwire-spike` (already used), 2 working ones, and 6 fresh `patterns` datapacks, because promoted patterns can't be deleted (K7). None is spare. |
 | Reproducibility | Same seed and mode give the same decisions. Any variance from Meko indexing timing is measured and reported. |
 | Security | The Meko key lives in `.env` on the server side only. The static demo has no keys. All data is synthetic. |
 | Speed | A fast-mode run finishes in under 10 minutes |
