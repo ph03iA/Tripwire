@@ -1,0 +1,2 @@
+# LF everywhere, so generated data/ is byte-identical on Windows and in CI.
+* text=auto eol=lf

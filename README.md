@@ -1,0 +1,64 @@
+# Tripwire
+
+Account-takeover detection for a payments app, where every agent remembers what the others saw. ContextCon 2026 entry, Theme 3 "Remember the Attacker", built on [Meko](https://mekodata.ai/).
+
+## The problem
+A takeover happens in small steps: a burst of failed logins, a new device, an email change, a payout. Each step is seen by a different system, and none of them looks bad on its own. By the time someone connects them, the money is gone.
+
+## How it works
+Four detection agents (login, device, transaction, support) write **risk signals** to shared Meko memory and read each other's. A decision agent turns them into **ALLOW / STEP-UP / BLOCK**, and every decision is saved with its reasoning as a Meko decision trace. When an analyst approves a confirmed attack pattern, it is promoted to a Meko learning, so the next attacker using the same tactics is caught earlier.
+
+Decisions are deterministic (rules + shared memory + approved patterns), so Tripwire runs on Meko's Free plan with no paid APIs and every result is reproducible.
+
+| Doc | What's in it |
+| --- | --- |
+| [PRD](docs/prd.md) | Problem, goals, requirements, how Meko is used, evaluation |
+| [Build plan](docs/plan.md) | Milestones to Jan 15, week-1 checks, quota budget, video script |
+| [Technical design](docs/design.md) | Layout, agents, event schema, scenarios |
+| [Meko API notes](docs/meko-api.md) | How Meko is called from TypeScript, Free-plan limits |
+
+## Synthetic data
+```bash
+npm install
+npm run generate          # writes data/events.jsonl, labels.json and accounts.json (seed 42)
+npm run generate -- --seed 7 --out data/seed7
+npm test
+```
+At most 2,000 events over 14 days from 150 accounts, plus `accounts.json`: what the app knows about each customer before the stream starts. Six attack and trap scenarios are planted in normal traffic: credential stuffing, a support-desk reset, card testing, a fraud ring, a repeat attacker, and an innocent traveler. Benign look-alikes (decoys) make sure no single field value gives an attack away. Ground truth is in `labels.json`, never in the events the agents see.
+
+## Results: Meko ON vs OFF
+Held-out seeds 101–105; definitions in the [PRD](docs/prd.md#8-evaluation).
+
+| Metric | Meko OFF | Meko ON |
+| --- | --- | --- |
+| Attack chains prevented: money never left (of 9) | – | – |
+| Caught at least one step early (of 9) | – | – |
+| Avg steps early | – | – |
+| Loss prevented (₹) | – | – |
+| False-positive BLOCKs | – | – |
+| STEP-UP friction on legit events | – | – |
+| Decision latency p50 / p95 | – | – |
+| Meko calls per decision | – | – |
+
+Where each attack chain was stopped (phase number; lower is earlier; "–" means the money left):
+
+| Chain | Takeover phase | Meko OFF | Meko ON |
+| --- | --- | --- | --- |
+| s1 credential stuffing | 4 | – | – |
+| s2 support-desk reset | 4 | – | – |
+| s3 card testing | 2 | – | – |
+| s4-1 … s4-5 fraud ring | 2 each | – | – |
+| s5 repeat attacker | 4 | – | – |
+
+## Status
+Milestones are in the [build plan](docs/plan.md).
+- [x] PRD and build plan
+- [x] Event schema and seeded generator with all 6 scenarios
+- [x] Generator v2: low-and-slow s1/s5, decoys, account profiles, chain labels
+- [ ] M0: Meko account, `signals` / `patterns` datapacks, week-1 checks
+- [ ] M1: Postgres store, knowledge docs, runner, all four detection agents (OFF mode)
+- [ ] M2: live slice: shared signals, decision agent, traces; s2 stopped in Meko
+- [ ] M3: analyst agent, approvals → learnings, repeat attacker stopped earlier
+- [ ] M4–M5: dashboard
+- [ ] M6: held-out evaluation, walkthroughs, docs
+- [ ] M7: demo video, submit

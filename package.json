@@ -1,0 +1,12 @@
+{
+  "name": "tripwire",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "generate": "npm run generate -w @tripwire/engine --",
+    "test": "npm test -w @tripwire/engine",
+    "typecheck": "npm run typecheck -w @tripwire/engine"
+  }
+}
