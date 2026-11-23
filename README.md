@@ -17,6 +17,7 @@ Decisions are deterministic (rules + shared memory + approved patterns), so Trip
 | [Engineering spec](docs/engineering-spec.md) | Module map, contracts, rules, testing, CI, PR workflow |
 | [Technical design](docs/design.md) | Layout, agents, event schema, scenarios |
 | [Meko API notes](docs/meko-api.md) | How Meko is called from TypeScript, Free-plan limits |
+| [Week-1 checks](docs/spikes.md) | What the live Meko API does: answers to K1–K11 |
 
 ## Synthetic data
 ```bash
@@ -33,6 +34,12 @@ npm run replay -- --seed 42 --meko off   # replays the stream through the four a
 npm run knowledge                        # regenerates knowledge/risk-rules.md after a rule changes
 ```
 OFF mode needs no account and makes no network calls. ON mode, with shared Meko memory, arrives in milestone M2.
+
+## Check Meko
+```bash
+npm run spike -- k9      # needs MEKO_API_KEY in .env; one week-1 check per argument, k1 … k11
+```
+The checks run against your real Meko account, in their own `tripwire-spike` datapack, and spend real quota. Run one only to re-check an answer in [docs/spikes.md](docs/spikes.md).
 
 ## Results: Meko ON vs OFF
 Held-out seeds 101–105; definitions in the [PRD](docs/prd.md#8-evaluation).

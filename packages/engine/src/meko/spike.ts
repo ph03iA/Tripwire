@@ -228,8 +228,12 @@ async function k7(ctx: Ctx) {
   const afterMemoryDelete = await state();
   if (!documentId) return { documentId, byMemoryId, afterMemoryDelete };
   const byDocument = await call(ctx, "knowledgebase_delete_document", { document_id: documentId, conversation_id: approval }, "idempotent").catch(failure);
+  // REST deletes uploaded files only; check whether a promoted pattern is listed as one.
+  const files = `datapacks/${ctx.datapackId}/knowledge-bases/documents`;
+  const listedAsFile = mentions(await ctx.rest.request<unknown>("GET", files, "read").catch(failure), documentId);
+  const byRest = listedAsFile ? await ctx.rest.request("DELETE", `${files}/${documentId}`, "idempotent").catch(failure) : "not listed as a file";
   await sleep(5000);
-  return { documentId, byMemoryId, afterMemoryDelete, byDocument, afterDocumentDelete: await state() };
+  return { documentId, byMemoryId, afterMemoryDelete, byDocument, listedAsFile, byRest, afterDocumentDelete: await state() };
 }
 
 /**
@@ -280,6 +284,19 @@ async function k11(ctx: Ctx) {
   };
 }
 
+/** What the spike datapack holds now: private memories by agent and conversation, with one example each (for K6). */
+async function inventory(ctx: Ctx) {
+  const conv = await conversation(ctx, "inventory", AGENT.runner);
+  const groups = new Map<string, { count: number; example?: string }>();
+  for (const row of await everyMemory(ctx, conv)) {
+    const key = `${row.agent_id} / ${row.conversation_id}`;
+    const group = groups.get(key) ?? { count: 0, example: row.data };
+    group.count++;
+    groups.set(key, group);
+  }
+  return Object.fromEntries(groups);
+}
+
 /** K8: what the saved checks spent, by tool. The monthly reset date is a question for the Meko Discord. */
 async function k8() {
   const byTool = new Map<string, number>();
@@ -325,7 +342,7 @@ async function spikeDatapack(rest: Rest): Promise<string> {
   return created;
 }
 
-const CHECKS: Record<string, (ctx: Ctx) => Promise<unknown>> = { k1, k2, k3, k4, k5, k6, k7, k8, k9, k10, k11 };
+const CHECKS: Record<string, (ctx: Ctx) => Promise<unknown>> = { k1, k2, k3, k4, k5, k6, k7, k8, k9, k10, k11, inventory };
 
 const wanted = process.argv.slice(2);
 const unknown = wanted.filter((id) => !CHECKS[id]);
