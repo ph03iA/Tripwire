@@ -57,10 +57,11 @@ export async function openStore(): Promise<EventStore> {
       `select count(*)::int as n from events where account_id = $1 and kind = 'login' and success = false and ts >= $2`,
       [accountId, since])).n,
 
-    // Failed attempts don't place the user anywhere, so they don't count as activity.
+    // Failed attempts (failed logins, declined payments) don't place the user anywhere, so they don't count as activity.
     lastActivity: async (accountId) => (await db.query<LastActivity>(
       `select ts, city, country from events where account_id = $1 and city is not null
-         and not (kind = 'login' and success = false) order by seq desc limit 1`, [accountId])).rows[0] ?? null,
+         and not (kind = 'login' and success = false) and (body->>'status') is distinct from 'declined'
+         order by seq desc limit 1`, [accountId])).rows[0] ?? null,
 
     resetSince: (accountId, since, channel) => exists(
       `select 1 from events where account_id = $1 and kind = 'password_reset' and ts >= $2 and ($3::text is null or channel = $3)`,

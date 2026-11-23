@@ -30,6 +30,12 @@ test("history queries answer from inserted events only", async () => {
     // The last successful activity is the reset at minute 6 in Pune; the support call has no device location.
     assert.deepEqual(await store.lastActivity("acc_1"), { ts: new Date(at(6)), city: "Pune", country: "IN" });
     assert.equal(await store.lastActivity("acc_9"), null);
+    // A declined payment elsewhere doesn't move the customer: Delhi survives a later decline in Mumbai.
+    const acc3 = { accountId: "acc_3", ...client, deviceId: "dev_c" };
+    await store.insert({ ...base("d1", 10), ...acc3, geo: { country: "IN", city: "Delhi" }, kind: "login", success: true, method: "password" }, 100);
+    await store.insert({ ...base("d2", 11), ...acc3, geo: { country: "IN", city: "Mumbai" }, kind: "transaction", type: "card_charge",
+      amountMinor: 200, currency: "INR", merchantId: "m9", status: "declined" }, 101);
+    assert.equal((await store.lastActivity("acc_3"))?.city, "Delhi");
     assert.equal(await store.resetSince("acc_1", at(6)), true);
     assert.equal(await store.resetSince("acc_1", at(6), "support"), true);
     assert.equal(await store.resetSince("acc_1", at(7)), false);
