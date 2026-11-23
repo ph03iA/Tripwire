@@ -104,6 +104,7 @@ type RiskSignal = {
   agent: "login" | "device" | "txn" | "support";
   ruleId: string;         // "device.shared": which rule fired
   accountId: string; eventId: string; ts: string;
+  eventKind: "login" | "password_reset" | "account_change" | "support_contact" | "transaction"; // what the signal is about
   type:
     | "credential_stuffing" | "failures_then_success" | "impossible_travel" | "login_after_support_reset" // login
     | "new_device" | "shared_device" | "rare_user_agent" | "new_device_after_reset"                     // device
@@ -139,7 +140,7 @@ At most 2,000 events from 150 accounts over 14 days. Each planted story gets its
 | Chain | Phases | Expected with Meko ON | Expected with Meko OFF |
 | --- | --- | --- | --- |
 | s1 | **1:** 2–3 failed logins on each of 15 probe accounts and 2 on the victim, ~40 s apart, overnight, from residential IPs in Indian cities, all with one rare Linux browser string. **2:** success on a new device. **3:** email change. **4:** payout of ₹80–99k to a new bank account (the mule). | Stopped at phase 3: the login and device signals reach the email-change decision (1 step early) | The payout is stopped at best, by the transaction agent alone (0 early) |
-| s2 | **1:** a support call passes KBA from a phone that isn't on file. **2:** password reset via support. **3:** new-device login. **4:** ₹1,80,000 to a new payee. | Stopped at phase 2: the support agent's signals reach the reset decision, and the OTP goes to the real owner, so the caller fails (2 early). Backup: the phase-3 login is always reviewed (A1). | Transfer stopped at best (0 early) |
+| s2 | **1:** a support call passes KBA from a phone that isn't on file. **2:** password reset via support. **3:** new-device login. **4:** ₹1,80,000 to a new payee. | Stopped at phase 2: the support agent's signals reach the reset decision, and the OTP goes to the real owner, so the caller fails (2 early) | Stopped at the phase-3 login at best (1 early): the login agent's own `login.after-support-reset` (0.7) triggers a review, and its step-up fails. So the comparison is ON at the reset vs OFF at the login. |
 | s3 | **1:** six ₹1–₹10 charges at different merchants, some declined. **2:** a ₹45,000 electronics purchase. | Purchase stopped (0 early) | Same: the transaction agent sees it alone |
 | s4-1…s4-5 | **1:** login from one shared device. **2:** ₹8–15k to the same new payee. The five accounts are about 10 h apart. | s4-2…s4-5 stopped at the transfer, because the device agent's shared-device signal reaches the decision (0 early). s4-1 is missed. | Missed: each transfer looks normal to the transaction agent |
 | s5 | s1's attacker, 7 days later, on 12 probe accounts and a new victim. Same browser string, cadence and mule account; new IPs and devices. | Stopped at phase 2. The approved s1 pattern matches what is visible at the login: the browser string, the cadence, the spray running at the same time (2 early). | Same as s1 |

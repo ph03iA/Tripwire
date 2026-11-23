@@ -130,7 +130,7 @@ Starting values, tuned on seed 42 only. The code is the source of truth: `knowle
 | login | `login.failures-then-success` | failures_then_success | a successful login after ≥ 2 failures in the previous 30 min | 0.3 |
 | login | `login.impossible-travel` | impossible_travel | a successful login whose distance from the account's last successful activity needs > 900 km/h | 0.7 |
 | login | `login.after-support-reset` | login_after_support_reset | a successful login within 60 min of a password reset via support | 0.7 |
-| device | `device.new-device` | new_device | a device that isn't in the profile and never appeared on the account | 0.4, so it's shared: the support agent's context rule needs it |
+| device | `device.new-device` | new_device | a device that isn't in the profile and was never used on the account. Failed logins don't count, in either direction: they don't show the device got in. | 0.4, so it's shared: the support agent's context rule needs it |
 | device | `device.shared` | shared_device | a device used by other accounts in the last 7 days | 0.5 for one other, 0.7 for two, 0.8 for three or more |
 | device | `device.rare-ua` | rare_user_agent | a browser string on < 2% of the devices in all profiles | 0.2 |
 | device | `device.new-after-reset` | new_device_after_reset | a password reset made from a new device, or a new device within 60 min of any reset | 0.6 |
@@ -139,10 +139,10 @@ Starting values, tuned on seed 42 only. The code is the source of truth: `knowle
 | txn | `txn.high-value-new-payee` | high_value_new_payee | a transfer of at least ₹50,000 to a new payee | 0.5, or 0.6 at ≥ ₹1,00,000 |
 | txn | `txn.payout-new-bank` | payout_new_bank | a payout to a new bank account | 0.4, or 0.6 at ≥ ₹50,000 |
 | txn | `txn.amount-anomaly` | amount_anomaly | at least ₹10,000 and ≥ 5× the median of ≥ 3 earlier transactions | 0.4 |
-| support | `support.weak-verification` | weak_verification | a reset or email-change request verified by KBA, or not verified | 0.5 (KBA), 0.6 (none) |
-| support | `support.caller-mismatch` | caller_mismatch | the caller's phone isn't on file | 0.3, or 0.4 if also outside the home city |
+| support | `support.weak-verification` | weak_verification | a reset or email-change request verified by KBA, or not verified; a failed check is its own case | 0.5 (KBA), 0.6 (none), 0.4 (failed) |
+| support | `support.caller-mismatch` | caller_mismatch | the caller's phone isn't on file, or the registered phone calls from outside the home city | 0.3 unknown phone, 0.4 unknown and away, 0.2 registered but away |
 | support | `support.sensitive-change` | sensitive_change | an email, phone, payout-method or 2FA change | 0.4 |
-| support | `support.change-after-new-device` (context) | sensitive_change | a sensitive change within 60 min of a recalled `new_device` signal on the account | 0.6 |
+| support | `support.change-after-new-device` (context) | sensitive_change | a sensitive change within 60 min after a recalled `new_device` signal from a successful login on the account (signals carry their `eventKind`) | 0.6 |
 
 Impossible travel compares successful activity only: failed attempts come from rotating proxies and don't place the user anywhere. Cities missing from `agents/geo.ts` produce no finding (`shortcut:` comment in code).
 

@@ -1,6 +1,10 @@
+import type { TripwireEvent } from "../types.js";
 import { type Agent, type AgentContext, type ClientEvent, type Rule, hasClient, minutesBefore } from "./types.js";
 
 const SHARED_SCORE = [0, 0.5, 0.7, 0.8]; // by number of other accounts on the device, capped at 3
+
+/** The event shows the device was actually used on the account. A failed login doesn't: the device never got in. */
+const usesDevice = (e: TripwireEvent): e is ClientEvent => hasClient(e) && !(e.kind === "login" && !e.success);
 
 async function isNewDevice(e: ClientEvent, ctx: AgentContext): Promise<boolean> {
   const inProfile = ctx.profile(e.accountId)?.knownDevices.some((d) => d.id === e.deviceId);
@@ -11,9 +15,9 @@ async function isNewDevice(e: ClientEvent, ctx: AgentContext): Promise<boolean> 
 const newDevice: Rule = {
   id: "device.new-device",
   type: "new_device",
-  when: "the device isn't in the account's profile and has never been used on the account (0.4)",
+  when: "the device isn't in the account's profile and has never been used on the account; failed logins don't count (0.4)",
   async fire(e, ctx) {
-    if (!hasClient(e) || !(await isNewDevice(e, ctx))) return null;
+    if (!usesDevice(e) || !(await isNewDevice(e, ctx))) return null;
     return { score: 0.4, evidence: `first time ${e.deviceId} is used on the account` };
   },
 };
@@ -46,7 +50,7 @@ const newDeviceAroundReset: Rule = {
   type: "new_device_after_reset",
   when: "a password reset is made from a new device, or a new device appears within 60 minutes of a reset (0.6)",
   async fire(e, ctx) {
-    if (!hasClient(e) || !(await isNewDevice(e, ctx))) return null;
+    if (!usesDevice(e) || !(await isNewDevice(e, ctx))) return null;
     const resetNow = e.kind === "password_reset";
     if (!resetNow && !(await ctx.history.resetSince(e.accountId, minutesBefore(e, 60)))) return null;
     return { score: 0.6, evidence: resetNow ? "password reset from a new device" : "new device within 60 min of a password reset" };

@@ -45,6 +45,13 @@ test("history queries answer from inserted events only", async () => {
     assert.equal(await store.otherAccountsOnDevice("dev_a", "acc_2", at(0)), 1);
     assert.deepEqual(await store.smallCharges("acc_1", at(0)), { count: 2, merchants: ["m1", "m2"] });
     assert.deepEqual(await store.smallCharges("acc_9", at(0)), { count: 0, merchants: [] });
+    // A failed login doesn't count as using a device; a charge with no merchant counts as a charge, not a merchant.
+    const acc5 = { accountId: "acc_5", ...client, deviceId: "dev_f" };
+    await store.insert({ ...base("f1", 20), ...acc5, kind: "login", success: false, method: "password", failureReason: "bad_password" }, 102);
+    assert.equal(await store.deviceSeenOnAccount("acc_5", "dev_f"), false);
+    await store.insert({ ...base("f2", 21), ...acc5, kind: "transaction", type: "card_charge", amountMinor: 100, currency: "INR", merchantId: "mx", status: "approved" }, 103);
+    await store.insert({ ...base("f3", 22), ...acc5, kind: "transaction", type: "card_charge", amountMinor: 100, currency: "INR", status: "approved" }, 104);
+    assert.deepEqual(await store.smallCharges("acc_5", at(0)), { count: 2, merchants: ["mx"] });
     assert.deepEqual(await store.medianAmount("acc_1"), { median: 900, count: 3 });
     assert.deepEqual(await store.medianAmount("acc_9"), { median: null, count: 0 });
   } finally {
