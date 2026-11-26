@@ -9,14 +9,17 @@ Three runs of the same stream:
 - **ON, dry:** the full ON pipeline against the in-process stand-in for Meko, whose search is ideal (every matching signal comes back).
 - **ON, live:** the first run against Meko itself, run `42-on-2026-11-26T15-40-33-011Z`.
 
+The OFF and dry columns come from the code after the review fixes (#9–#12). The live run used the code before them, so its chains and call counts stand as measured. Its rates are recomputed from its record with the corrected definitions. Of the fixes, the stopped-payout history (review finding 2) and the quote checks (finding 6) could change a live decision. A second live run would re-measure.
+
 | | OFF | ON, dry | ON, live |
 | --- | --- | --- | --- |
 | Attack chains prevented (of 9) | 4 | 8 | 8 |
 | Caught at least one phase early | 1 | 6 | 6 |
 | Average phases early, over prevented chains | 0.25 | 0.88 | 0.88 |
 | Loss prevented (of ₹4,72,956) | ₹4,17,399 | ₹4,63,570 | ₹4,63,570 |
-| BLOCKs on legit events (of 259 legit sensitive events) | 0 | 3 (1.2%) | 0 |
-| STEP-UPs on legit events | 15 (5.8%) | 31 (12.0%) | 20 (7.7%) |
+| BLOCKs on legit sensitive events (of 259) | 0 (0.0%) | 2 (0.8%) | 0 (0.0%) |
+| STEP-UPs on legit sensitive events (of 259) | 12 (4.6%) | 30 (11.6%) | 17 (6.6%) |
+| BLOCKs and STEP-UPs on all legit events | 0 and 15 | 3 and 31 | 0 and 20 |
 | Legit events refused after a stop | 0 | 6 | 0 |
 | The s6 traveler | STEP-UP, passed | STEP-UP, passed | STEP-UP, passed |
 
@@ -48,7 +51,7 @@ It still changed the outcome. Here is how each ON-mode stop happened:
 
 So on this seed, two of ON's gains come from recalled memory (s1 and s5). The rest come from the decision agent seeing every agent's signals on an event.
 
-The live run's misses also explain its 0 legit BLOCKs, where the dry run had 3. Ideal search links three planted look-alikes, two support-desk resets after a KBA call and an email change after a new-device login, into risk of 0.8 or more. Thresholds and retrieval are tuned in M3. The PRD's target is at most 0.5% legit BLOCKs on the held-out seeds.
+The live run's misses also explain its 0 legit BLOCKs, where the dry run had 3, 2 of them on sensitive events. Ideal search links three planted look-alikes, two support-desk resets after a KBA call and an email change after a new-device login, into risk of 0.8 or more. Thresholds and retrieval are tuned in M3. The PRD's target is at most 0.5% BLOCKs on legit sensitive events on the held-out seeds, and the dry run is at 0.8%.
 
 ## Traces
 
@@ -66,6 +69,8 @@ Quotes by document:
 | `risk-rules.md` | 1 |
 | `travel.md` | 1 |
 
+The `risk-rules.md` quote is wrong. It's the STEP-UP on `evt_000369`, whose playbook passage came from the risk rules. The fixed code accepts a playbook passage only from a playbook. When none is returned, it lists the gap in the decision's `missingQuotes`.
+
 For the s2 walkthrough (DOC2):
 - **s2's case conversation:** `23d635fd45dd626bd9786235936c6ffa`. Its trace in `tripwire-signals` holds the memory searches and the STEP-UP turn. Its two knowledge-base searches show under the same ID in `tripwire-patterns`' Observe (K11).
 - **The run conversation:** `f72c153a0afbbabc399e2623a490b975`.
@@ -75,6 +80,7 @@ For the s2 walkthrough (DOC2):
 
 - The audit kept the run's 149 signals and deleted 0 other memories. Meko mined nothing from the 39 turns, whose user input is a fixed line with no facts in it. K6's turn, which named an event, left a memory.
 - A read of `tripwire-signals` after the run found exactly the 149 signals, every one written by the run.
+- Since the review fixes, the audit also runs after a failed run, and it fails when its listing misses any of the run's own signals. Only one live ON run at a time can use the datapack.
 
 ## Cost and speed
 
