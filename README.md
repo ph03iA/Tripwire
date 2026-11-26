@@ -18,6 +18,7 @@ Decisions are deterministic (rules + shared memory + approved patterns), so Trip
 | [Technical design](docs/design.md) | Layout, agents, event schema, scenarios |
 | [Meko API notes](docs/meko-api.md) | How Meko is called from TypeScript, Free-plan limits |
 | [Week-1 checks](docs/spikes.md) | What the live Meko API does: answers to K1–K11 |
+| [Results](docs/results.md) | Seed 42 so far: Meko ON vs OFF, live and dry, with what Meko's memory did |
 
 ## Synthetic data
 ```bash
@@ -74,9 +75,9 @@ Milestones are in the [build plan](docs/plan.md).
 - [x] PRD and build plan
 - [x] Event schema and seeded generator with all 6 scenarios
 - [x] Generator v2: low-and-slow s1/s5, decoys, account profiles, chain labels
-- [ ] M0: Meko account, `signals` / `patterns` datapacks, week-1 checks
-- [ ] M1: Postgres store, knowledge docs, runner, all four detection agents (OFF mode)
-- [ ] M2: live slice: shared signals, decision agent, traces; s2 stopped in Meko
+- [x] M0: Meko account, `signals` / `patterns` datapacks, week-1 checks (the quota's reset day is still unknown)
+- [x] M1: Postgres store, knowledge docs and their upload, runner, all four detection agents (OFF mode)
+- [ ] M2: live slice: shared signals, decision agent, traces; s2 stopped in Meko. Built; the first live run stopped s2 at the reset ([results](docs/results.md)).
 - [ ] M3: analyst agent, approvals → learnings, repeat attacker stopped earlier
 - [ ] M4–M5: dashboard
 - [ ] M6: held-out evaluation, walkthroughs, docs

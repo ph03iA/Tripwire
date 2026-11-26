@@ -58,14 +58,14 @@ Exit check: `npm run replay -- --seed 42 --meko off` writes signals and a `runs/
 
 | Task | Req |
 | --- | --- |
-| ON mode: signals written with `memory_add` and recalled with `memory_search`, filtered by entity and the 72-hour window. The runner waits until a new signal is retrievable; run reset. | A5–A7, R5 |
-| Decision agent: triggers, noisy-OR risk, policy, quoted playbook and policy passages, decision record with every retrieval | C1–C3 |
-| Stops and step-ups: attacker locked out after a stop; OTP outcomes from the world simulator | R2, R3 |
-| Traces: one Meko conversation per case, a turn per flagged decision, searches carrying the case `conversation_id`; daily allow ledger | C4, C5 |
-| Memory hygiene: fact-free user turns, ID-based trust, end-of-run audit | R8 |
-| `metrics.ts`: prevented and caught-early per chain, from what the runner executed | §8 |
-| Dry run first: `--meko dry` reports the conversation calls and searches a run needs, checked against the ceiling | R7, §9 |
-| Two live ON runs on seed 42 | |
+| ✅ ON mode: signals written with `memory_add` and recalled with `memory_search`, filtered by entity and the 72-hour window. The runner waits until a new signal is retrievable; run reset. | A5–A7, R5 |
+| ✅ Decision agent: triggers, noisy-OR risk, policy, quoted playbook and policy passages, decision record with every retrieval | C1–C3 |
+| ✅ Stops and step-ups: attacker locked out after a stop; OTP outcomes from the world simulator | R2, R3 |
+| ✅ Traces: one Meko conversation per case, a turn per flagged decision, searches carrying the case `conversation_id`; daily allow ledger | C4, C5 |
+| ✅ Memory hygiene: fact-free user turns, ID-based trust, end-of-run audit | R8 |
+| ✅ `metrics.ts`: prevented and caught-early per chain, from what the runner executed | §8 |
+| ✅ Dry run first: `--meko dry` reports the conversation calls and searches a run needs, checked against the ceiling | R7, §9 |
+| Two live ON runs on seed 42. The first ran on 2026-11-26 ([results](results.md)); the second waits for the owner's OK, since the two together use about 60% of a month's Free memory searches. | |
 
 ### M3 Memory pays off (Dec 14–20)
 
