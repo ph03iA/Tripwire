@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { USER_AGENT } from "../config.js";
@@ -9,6 +9,7 @@ import { MekoError, type Wait } from "../meko/retry.js";
 
 export const KNOWLEDGE_DIR = fileURLToPath(new URL("../../../../knowledge/", import.meta.url));
 export const PATTERNS_DATAPACK = "tripwire-patterns";
+export const POLICY_FILE = "step-up-policy.md";
 const POLL_MS = 2000;
 const POLLS = 60; // 2 minutes
 const STOPPED = new Set(["failed", "abandoned", "oversized"]);
@@ -17,6 +18,30 @@ const STOPPED = new Set(["failed", "abandoned", "oversized"]);
 // shortcut: a renamed or removed doc stays in the knowledge base; delete it in the portal, or here once docs start moving around.
 export function knowledgeFiles(dir = KNOWLEDGE_DIR): string[] {
   return [dir, join(dir, "playbooks")].flatMap((d) => readdirSync(d).filter((f) => f.endsWith(".md")).sort().map((f) => join(d, f)));
+}
+
+/** The fraud playbooks: the only documents a decision may quote as its playbook passage (PRD C3). */
+export const playbookFiles = (dir = KNOWLEDGE_DIR) => knowledgeFiles(dir).filter((f) => basename(dirname(f)) === "playbooks");
+
+/**
+ * The uploaded policy's and playbooks' document IDs, so an ON run can check that each quote comes from the right
+ * document. A missing one stops the run before it starts: quotes need every document uploaded.
+ */
+export async function knowledgeDocuments(rest: Rest, datapackId: string): Promise<{ policy: string; playbooks: string[] }> {
+  const ids = new Map<string, string>(); // file name → document ID; the live API names a document by its storage key
+  for (let page = 1; ; page++) {
+    const list = await rest.request<{ items?: unknown; has_more?: unknown }>("GET",
+      `datapacks/${datapackId}/knowledge-bases/documents?page=${page}&page_size=200`, "read");
+    if (!Array.isArray(list?.items)) throw new Error("GET /documents: unexpected answer");
+    for (const d of list.items as Doc[]) if (typeof d?.document_name === "string" && typeof d.id === "string") ids.set(d.document_name.split("/").pop()!, d.id);
+    if (list.has_more !== true) break;
+  }
+  const idOf = (file: string) => {
+    const id = ids.get(file);
+    if (!id) throw new Error(`${file} isn't in the ${PATTERNS_DATAPACK} knowledge base: run npm run upload-knowledge first`);
+    return id;
+  };
+  return { policy: idOf(POLICY_FILE), playbooks: playbookFiles().map((f) => idOf(basename(f))) };
 }
 
 type Ticket = { url: string; key: string; already_uploaded: boolean; fields?: Record<string, string> };

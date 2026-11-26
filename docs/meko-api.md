@@ -63,6 +63,7 @@ Found by the [week-1 checks](spikes.md) on 2026-11-23, beyond what the docs say:
 - **`context_search`'s `knowledge_base` bucket doesn't include promoted patterns.** `knowledgebase_search` returns them, with `metadata_filters.source: "memory"` and the approval conversation's ID as `document_id` (K3).
 - **Promoted memories leave the private store and can't be deleted through the API.** `memory_delete_by_id` answers `memory_is_promoted`, and they aren't knowledge-base files. An owner can delete one on the datapack's Collective Memory page in the portal (K7).
 - **A search shows in the trace of the datapack it ran in.** Searches tagged with a case's `conversation_id` appear in Observe under a trace with that ID, but each in its own datapack's view (K11).
+- **`conversation_add_message` answers `{ status: "accepted", message_id, conversation_id }`**, and a repeat with the same `seed` answers the same `message_id` (K10). The runner takes that as the turn's receipt.
 - **A 32-hex `session_id` becomes the conversation ID unchanged**, and `conversation_get` on an unknown ID answers `not_found` (K10).
 - **Traces include Meko's own LLM work.** Each `conversation_add_message` trace shows the memory extraction's OpenAI spans and an estimated cost. Tripwire makes none of those calls.
 - **Conversation turns are mined for memories.** Within about 30 s, Meko saves one memory from a turn's user input, under the conversation's agent ID and tagged with the conversation. Nothing came from `output` or `reasoning` (K6).

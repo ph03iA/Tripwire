@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { ceilingCheck, logUsage, overQuota, usageOf, usedThisMonth, withHeadroom } from "./quota.js";
+import { logUsage, overCeiling, overQuota, preflight, usageOf, usedThisMonth, withHeadroom } from "./quota.js";
 
 test("the quota guard adds up this month's runs and spike checks, and refuses a run that wouldn't fit (R7)", () => {
   const dir = mkdtempSync(join(tmpdir(), "tripwire-quota-"));
@@ -21,5 +21,13 @@ test("the quota guard adds up this month's runs and spike checks, and refuses a 
   assert.deepEqual(needed, { conversationMessages: 63, memorySearches: 500, kbSearches: 75 });
   assert.deepEqual(overQuota(used, needed), [], "317 + 500 fits in 1,000");
   assert.deepEqual(overQuota(used, { ...needed, memorySearches: 700 }), ["memorySearches: 317 used this month + 700 needed > 1000"]);
-  assert.match(ceilingCheck({ conversationMessages: 121, memorySearches: 0, kbSearches: 0 }), /^over/);
+  assert.deepEqual(overCeiling({ conversationMessages: 120, memorySearches: 700, kbSearches: 100 }), [], "exactly the ceiling fits");
+});
+
+test("a live run that would break the per-run ceiling is refused even in an empty month (review finding 9)", () => {
+  // Regression: the live preflight checked only the monthly quota, so a 121-message estimate passed.
+  const empty = usageOf({});
+  assert.deepEqual(preflight({ conversationMessages: 121, memorySearches: 0, kbSearches: 0 }, empty), ["conversation messages: 121 needed > 120 per run"]);
+  assert.deepEqual(preflight({ conversationMessages: 0, memorySearches: 700, kbSearches: 101 }, empty), ["searches: 801 needed > 800 per run"]);
+  assert.deepEqual(preflight({ conversationMessages: 67, memorySearches: 342, kbSearches: 98 }, empty), [], "seed 42's estimate fits");
 });

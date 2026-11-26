@@ -37,7 +37,7 @@ npm run upload-knowledge                 # uploads knowledge/ into the tripwire-
 npm run replay -- --seed 42 --meko dry   # the ON pipeline against an in-process stand-in: the Meko calls a live run needs
 npm run replay -- --seed 42 --meko on    # shared signals, traces and the allow ledger in your Meko account; spends quota
 ```
-OFF mode needs no account and makes no network calls. ON mode needs `MEKO_API_KEY` in `.env` and the `tripwire-signals` and `tripwire-patterns` datapacks. It runs the dry pass first and refuses to start if the run could go over this month's Meko quota. A run on seed 42 makes about 700 Meko calls, at about a second each. The upload sends only files whose bytes changed, and spends no search quota.
+OFF mode needs no account and makes no network calls. ON mode needs `MEKO_API_KEY` in `.env`, the `tripwire-signals` and `tripwire-patterns` datapacks, and the knowledge docs uploaded. It runs the dry pass first and refuses to start if the run could break the per-run ceiling or go over this month's Meko quota. Only one ON run at a time can use the signals datapack. A run on seed 42 makes about 700 Meko calls, at about a second each. The upload sends only files whose bytes changed, and spends no search quota.
 
 ## Check Meko
 ```bash

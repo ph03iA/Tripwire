@@ -8,6 +8,10 @@ import { isPage, type Retrieval, SIGNALS_DATAPACK } from "../signals/meko.js";
 import type { TripwireEvent } from "../types.js";
 
 export type Quote = { documentId: string; text: string };
+/** The uploaded knowledge documents a quote may come from (C3): the step-up policy, and the fraud playbooks. */
+export type KnowledgeDocuments = { policy: string; playbooks: string[] };
+/** What a STEP-UP or BLOCK quotes, and which of its two required passages no search returned. */
+export type Quoted = { quotes: Quote[]; missing: ("playbook" | "policy")[] };
 
 const RUNNER = "tripwire:runner";
 const DECISION = "tripwire:decision";
@@ -17,6 +21,7 @@ const EXTRACTION_SETTLE_MS = 60_000; // K6: Meko saves a memory from a turn with
 const TURN_READABLE_AFTER_MS = 10_000; // K10: a turn shows in conversation_get about 8 s after the call
 const LEDGER_PART_CHARS = 12_000; // K10 stored a 13,149-character turn whole
 const QUOTE_CHARS = 400;
+const KB_LIMIT = 5; // room for the required document among other hits
 const DELETE_ROUNDS = 20;
 // R8: a turn's user input is mined for a memory, so it is fixed and says nothing; the details go in output and reasoning.
 const FLAGGED_INPUT = "Explain the flagged decision recorded in this turn.";
@@ -32,7 +37,8 @@ export type Trace = {
   caseOf(accountId: string): string | undefined;
   log(r: Retrieval): void;
   retrievalsFor(eventId: string): Retrieval[];
-  quotes(e: TripwireEvent, v: Verdict): Promise<Quote[]>;
+  retrievals(): Retrieval[]; // every search of the run, in order
+  quotes(e: TripwireEvent, v: Verdict): Promise<Quoted>;
   flagged(turn: TraceTurn, accountId: string): Promise<void>;
   ledger(ts: string, line: string): Promise<void>;
   finish(trusted: Set<string>): Promise<{ kept: number; deleted: number }>;
@@ -45,7 +51,8 @@ export const noTrace: Trace = {
   caseOf: () => undefined,
   log: () => {},
   retrievalsFor: () => [],
-  quotes: async () => [],
+  retrievals: () => [],
+  quotes: async () => ({ quotes: [], missing: [] }),
   flagged: async () => {},
   ledger: async () => {},
   finish: async () => ({ kept: 0, deleted: 0 }),
@@ -56,6 +63,7 @@ export type TraceOptions = {
   mcp: Mcp;
   runId: string;
   datapacks: { signals: string; patterns: string };
+  documents: KnowledgeDocuments;
   wait?: Wait;
   now?: () => number;
   progress?: (line: string) => void;
@@ -77,6 +85,8 @@ const PLAN = {
  */
 export async function openTrace(o: TraceOptions): Promise<Trace> {
   const { mcp, runId, datapacks, wait = sleep, now = Date.now } = o;
+  const playbooks = new Set(o.documents.playbooks);
+  const policyDoc = new Set([o.documents.policy]);
   const inSignals = { datapack_id: datapacks.signals };
   const retrievals: Retrieval[] = [];
   const cases = new Map<string, Promise<string>>();
@@ -85,31 +95,41 @@ export async function openTrace(o: TraceOptions): Promise<Trace> {
   let ledgerDay: string | undefined;
   let ledgerLines: string[] = [];
 
+  /** A write that failed without a clear refusal may still have been applied: its outcome is checked, never assumed. */
+  const unlessRefused = (err: unknown) => {
+    if (classify(err) === "permanent") throw err;
+    return undefined;
+  };
+
   async function conversation(key: string, title: string, agentId: string): Promise<string> {
     const id = sessionId(runId, key);
-    const out = await mcp.call("conversation_create", { ...inSignals, title, agent_id: agentId, session_id: id }, "idempotent").catch(async (err: unknown) => {
-      if (classify(err) === "permanent") throw err;
-      // The outcome is unknown: the conversation exists if Meko knows its ID (an unknown one answers not_found, K10).
-      await mcp.call("conversation_get", { ...inSignals, conversation_id: id, agent_id: agentId }, "read");
-      return { id };
-    });
-    if ((out as { id?: unknown } | null)?.id !== id) throw new Error(`conversation_create didn't keep the session_id as the conversation ID (K10 changed)`);
+    const out = await mcp.call("conversation_create", { ...inSignals, title, agent_id: agentId, session_id: id }, "idempotent").catch(unlessRefused);
+    const got = (out as { id?: unknown } | null | undefined)?.id;
+    if (got === id) return id;
+    if (typeof got === "string") throw new Error("conversation_create answered with an ID other than its session_id (K10 changed)");
+    // No readable receipt: the conversation exists only if Meko knows its ID (an unknown one answers not_found, K10).
+    await mcp.call("conversation_get", { ...inSignals, conversation_id: id, agent_id: agentId }, "read");
     return id;
   }
 
-  /** Conversation writes carry a seed, so a retry stores nothing new; after an unknown outcome the turn is looked up (spec §6). */
+  /**
+   * Conversation writes carry a seed, so a retry stores nothing new. A turn counts as written only with Meko's receipt
+   * for it, or when it's found in its conversation afterwards; otherwise the run stops, since C4 needs every trace.
+   */
   async function addTurn(args: Record<string, unknown>, marker: string) {
     try {
-      await mcp.call("conversation_add_message", { ...inSignals, ...args }, "idempotent").catch(async (err: unknown) => {
-        if (classify(err) === "permanent") throw err;
-        await wait(TURN_READABLE_AFTER_MS);
-        const got = await mcp.call("conversation_get", { ...inSignals, conversation_id: args.conversation_id, agent_id: args.agent_id,
-          include_messages: true }, "read");
-        if (!JSON.stringify(got).includes(marker)) throw new Error(`a trace turn (${marker}) may be missing after an unknown outcome, so the run stops (C4)`);
-      });
+      const out = await mcp.call("conversation_add_message", { ...inSignals, ...args }, "idempotent").catch(unlessRefused);
+      if (!isTurnReceipt(out, String(args.conversation_id))) await findTurn(args, marker);
     } finally {
       lastConversationCall = now();
     }
+  }
+
+  async function findTurn(args: Record<string, unknown>, marker: string) {
+    await wait(TURN_READABLE_AFTER_MS);
+    const got = await mcp.call("conversation_get", { ...inSignals, conversation_id: args.conversation_id, agent_id: args.agent_id,
+      include_messages: true }, "read");
+    if (!JSON.stringify(got).includes(marker)) throw new Error(`a trace turn (${marker}) has no receipt and isn't in its conversation, so the run stops (C4)`);
   }
 
   /** memory_delete_all deletes in batches and says when it's done. */
@@ -146,12 +166,13 @@ export async function openTrace(o: TraceOptions): Promise<Trace> {
     ledgerLines = [];
   }
 
-  async function passage(e: TripwireEvent, query: string): Promise<Quote | undefined> {
+  /** The best hit from one of the accepted documents; a learned pattern (source "memory", K3) is never a passage. */
+  async function passage(e: TripwireEvent, query: string, accepted: Set<string>): Promise<Quote | undefined> {
     const conversationId = await caseFor(e.accountId);
     const out = await mcp.call("knowledgebase_search", { datapack_id: datapacks.patterns, conversation_id: conversationId, agent_id: DECISION,
-      query, limit: 3 }, "read");
+      query, limit: KB_LIMIT }, "read");
     const hits = kbHits(out);
-    const hit = hits.find((h) => h.metadata_filters?.source !== "memory"); // a learned pattern isn't a playbook passage (K3)
+    const hit = hits.find((h) => accepted.has(h.document_id) && h.metadata_filters?.source !== "memory");
     retrievals.push({ eventId: e.id, agent: DECISION, tool: "knowledgebase_search", datapack: PATTERNS_DATAPACK, conversationId, query,
       returnedIds: hits.map((h) => h.id), usedIds: hit ? [hit.id] : [] });
     return hit && { documentId: hit.document_id, text: hit.chunk_text.length > QUOTE_CHARS ? `${hit.chunk_text.slice(0, QUOTE_CHARS)}…` : hit.chunk_text };
@@ -176,10 +197,12 @@ export async function openTrace(o: TraceOptions): Promise<Trace> {
     caseOf: (accountId) => resolved.get(accountId),
     log: (r) => void retrievals.push(r),
     retrievalsFor: (eventId) => retrievals.filter((r) => r.eventId === eventId),
+    retrievals: () => [...retrievals],
     async quotes(e, v) {
-      const playbook = await passage(e, `fraud playbook: ${v.used.map((s) => s.type.replaceAll("_", " ")).join(", ") || e.kind}`);
-      const policy = await passage(e, `step-up policy: ${v.action === "BLOCK" ? "BLOCK" : "STEP-UP"} at risk ${v.risk.toFixed(2)}`);
-      return [playbook, policy].filter((q): q is Quote => q !== undefined);
+      const playbook = await passage(e, `fraud playbook: ${v.used.map((s) => s.type.replaceAll("_", " ")).join(", ") || e.kind}`, playbooks);
+      const policy = await passage(e, `step-up policy: ${v.action === "BLOCK" ? "BLOCK" : "STEP-UP"} at risk ${v.risk.toFixed(2)}`, policyDoc);
+      const missing = ([["playbook", playbook], ["policy", policy]] as const).filter(([, q]) => !q).map(([name]) => name);
+      return { quotes: [playbook, policy].filter((q): q is Quote => q !== undefined), missing };
     },
     async flagged(turn, accountId) {
       const header = `Decision for ${turn.eventId}`;
@@ -216,6 +239,13 @@ export async function openTrace(o: TraceOptions): Promise<Trace> {
     },
     conversations: () => ({ run, ledger, cases: Object.fromEntries(resolved) }),
   };
+}
+
+/** Meko's receipt for a turn is `{ status: "accepted", message_id, conversation_id }` (K10); IDs may come with or without dashes. */
+function isTurnReceipt(out: unknown, conversationId: string): boolean {
+  const r = out as { message_id?: unknown; conversation_id?: unknown } | null | undefined;
+  return typeof r?.message_id === "string" && r.message_id !== "" && typeof r.conversation_id === "string"
+    && r.conversation_id.replaceAll("-", "") === conversationId.replaceAll("-", "");
 }
 
 /** Lines packed into parts of at most `max` characters, in order. */
