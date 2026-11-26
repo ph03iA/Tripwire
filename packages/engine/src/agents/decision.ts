@@ -1,5 +1,6 @@
 import type { AccountProfile, RiskSignal, SignalType, TripwireEvent } from "../types.js";
 import { noisyOr } from "./index.js";
+import { isAiSignal } from "./review.js";
 import { hasClient } from "./types.js";
 
 /** PRD C2, written out in knowledge/step-up-policy.md; a test checks that the two agree. */
@@ -13,11 +14,14 @@ const TRAVEL = new Set<SignalType>(["impossible_travel"]);
 export type Action = "ALLOW" | "STEP_UP" | "BLOCK";
 /** Why the decision agent reviewed an event: it's sensitive, or a signal on it reached REVIEW_SIGNAL_AT. */
 export type Trigger = "sensitive" | "signal";
+/** Why a BLOCK was lowered to STEP-UP: travel alone on a device in the profile, or risk that only the agents' models put at BLOCK. */
+export type Cap = "travel" | "ai";
 export type Verdict = {
   action: Action;
   risk: number; // noisy-OR of `used`
   used: RiskSignal[]; // the strongest signal of each type, strongest first
-  capped: boolean; // a BLOCK lowered to STEP-UP: the only risk is travel, on a device in the profile
+  capped: boolean; // a BLOCK lowered to STEP-UP, for the reason in `cap`
+  cap?: Cap;
   reasoning: string;
 };
 
@@ -44,9 +48,19 @@ export const UNREVIEWED = `not reviewed: not a sensitive event, and no signal of
 export function decide(e: TripwireEvent, signals: RiskSignal[], profile: AccountProfile | undefined): Verdict {
   const used = strongestPerType(signals);
   const risk = noisyOr(used.map((s) => s.score));
-  const capped = actionFor(risk) === "BLOCK" && isKnownDeviceTravel(e, used, profile);
-  const action = capped ? "STEP_UP" : actionFor(risk);
-  return { action, risk, used, capped, reasoning: reasoningFor(e, action, risk, used, capped) };
+  const cap = actionFor(risk) === "BLOCK" ? capOf(e, signals, used, profile) : undefined;
+  const action = cap ? "STEP_UP" : actionFor(risk);
+  return { action, risk, used, capped: cap !== undefined, ...(cap ? { cap } : {}), reasoning: reasoningFor(e, action, risk, used, cap) };
+}
+
+/**
+ * Travel alone on a device in the profile never blocks (C2). Nor does risk that reaches BLOCK only through signals the
+ * agents' models added (M2.5): a block needs the rules' own evidence, while a step-up still stops an attacker (R3).
+ */
+function capOf(e: TripwireEvent, signals: RiskSignal[], used: RiskSignal[], profile: AccountProfile | undefined): Cap | undefined {
+  if (isKnownDeviceTravel(e, used, profile)) return "travel";
+  const rulesRisk = noisyOr(strongestPerType(signals.filter((s) => !isAiSignal(s))).map((s) => s.score));
+  return rulesRisk < BLOCK_AT ? "ai" : undefined;
 }
 
 const actionFor = (risk: number): Action => (risk >= BLOCK_AT ? "BLOCK" : risk >= STEP_UP_AT ? "STEP_UP" : "ALLOW");
@@ -77,9 +91,13 @@ const POLICY: Record<Action, string> = {
 const LABEL: Record<Action, string> = { BLOCK: "BLOCK", STEP_UP: "STEP-UP", ALLOW: "ALLOW" };
 
 /** The plain-English "why": a template over the verdict, so nothing in it is generated text. */
-function reasoningFor(e: TripwireEvent, action: Action, risk: number, used: RiskSignal[], capped: boolean): string {
+const CAP_REASON: Record<Cap, string> = {
+  travel: " The only risk is travel, on a device in the account's profile, so it's capped at STEP-UP.",
+  ai: " Only the agents' models put it at BLOCK level, so it's capped at STEP-UP: a block needs the rules' own evidence.",
+};
+
+function reasoningFor(e: TripwireEvent, action: Action, risk: number, used: RiskSignal[], cap: Cap | undefined): string {
   if (used.length === 0) return `${LABEL[action]}: no risk signals visible for the account, its device, IP or payee in the last 72 hours.`;
   const parts = used.map((s) => `${s.type} ${s.score}${s.accountId === e.accountId ? "" : ` on ${s.accountId}`} (${s.ruleId}: ${s.evidence})`);
-  const cap = capped ? " The only risk is travel, on a device in the account's profile, so it's capped at STEP-UP." : "";
-  return `${LABEL[action]}: risk ${risk.toFixed(2)} from ${parts.join("; ")}. Policy: ${POLICY[capped ? "BLOCK" : action]}.${cap}`;
+  return `${LABEL[action]}: risk ${risk.toFixed(2)} from ${parts.join("; ")}. Policy: ${POLICY[cap ? "BLOCK" : action]}.${cap ? CAP_REASON[cap] : ""}`;
 }

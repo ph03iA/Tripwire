@@ -13,6 +13,7 @@ Risk is the noisy-OR of the strongest signal of each type on the account, and on
 ## Caps
 
 - **Known device, travel only.** When the only risk is impossible travel, on a device in the account's profile, the action is capped at STEP-UP. Real customers travel with their own phones, and a code to that phone settles it.
+- **The agents' models alone.** When only the signals the agents' models added put the risk at 0.8 or more, the action is capped at STEP-UP. A block needs the rules' own evidence; a step-up still stops an attacker, who can't enter the code.
 
 ## When a decision runs
 

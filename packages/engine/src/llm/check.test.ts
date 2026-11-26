@@ -9,6 +9,7 @@ const decisions = all.filter((s): s is DecisionSample => s.kind === "decision");
 test("llm-check's calls come from seed 42: an attack-heavy batch per agent, a decision per attack chain and three legit ones", () => {
   assert.deepEqual(batches.map((b) => [b.agent.name, b.events.length]), [["login", 50], ["device", 50], ["txn", 50], ["support", 31]], "the support agent handles 31 events in all");
   assert.ok(batches.every((b) => b.attacks.length > 0 && b.attacks.length < b.events.length), "each batch mixes attacks and legit events");
+  assert.match(batches[0]!.patterns[0]!, /: 16 accounts, 39 events in 27 min \(38 failed logins, 1 successful, 0 other\), median gap 41 s/, "s1's spray, measured");
   assert.deepEqual(decisions.filter((d) => d.attack).map((d) => d.chain), ["s1", "s2", "s3", "s5"]);
   assert.equal(decisions.filter((d) => !d.attack).length, 3);
   assert.ok(decisions.every((d) => d.signals.length > 0), "every decision has evidence to cite");

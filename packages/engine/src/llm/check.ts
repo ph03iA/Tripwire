@@ -1,41 +1,44 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Action } from "../agents/decision.js";
-import { AGENTS } from "../agents/index.js";
-import { type Agent, rupees } from "../agents/types.js";
+import { AGENTS, WRITE_AT } from "../agents/index.js";
+import { patternReadings, patternWindow } from "../agents/readings.js";
+import { checkReview, describe, type Prompt, type Reading, reviewPrompt } from "../agents/review.js";
+import type { Agent } from "../agents/types.js";
 import { generate } from "../generator/generate.js";
 import { KNOWLEDGE_DIR, POLICY_FILE } from "../knowledge/upload.js";
-import { type Decision, replayStream, type RunFinding, type RunRecord, type Stream } from "../runner/replay.js";
+import { browserShares, type Decision, replayStream, type RunRecord, type Stream } from "../runner/replay.js";
 import type { AccountProfile, AgentName, Label, RiskSignal, TripwireEvent } from "../types.js";
-import type { JsonSchema } from "./client.js";
 
 /**
- * The calls `npm run llm-check` sends to every candidate model, built from a seed-42 OFF run: batch reviews for the
- * detection agents and decisions on triggers with evidence. The prompts are drafts; steps 2 and 3 of the M2.5 plan
- * move them into the agents. Labels are used only to score the answers, never in a prompt (PRD R3).
+ * The calls `npm run llm-check` sends to every candidate model, built from a seed-42 OFF run: the detection agents'
+ * own batch-review prompts, and draft decision prompts until step 3 moves them into the decision agent. Labels are
+ * used only to score the answers, never in a prompt (PRD R3).
  */
 const BATCH = 50;
 const LEGIT_DECISIONS = 3;
-const SHARE_AT = 0.4; // a signal worth sharing, as the agents' WRITE_AT
 
-export type BatchSample = { kind: "batch"; id: string; agent: Agent; events: TripwireEvent[]; readings: RunFinding[]; attacks: string[]; ruleFlags: string[] };
+export type BatchSample = {
+  kind: "batch"; id: string; agent: Agent; events: TripwireEvent[]; readings: Reading[]; patterns: string[]; attacks: string[]; ruleFlags: string[];
+};
 export type DecisionSample = {
   kind: "decision"; id: string; event: TripwireEvent; signals: RiskSignal[]; profile: AccountProfile | undefined;
   attack: boolean; chain: string | undefined; rulesAction: Action;
 };
 export type Sample = BatchSample | DecisionSample;
-export type Prompt = { system: string; user: string; schemaName: string; schema: JsonSchema };
+export type { Prompt };
 
 export async function samples(seed = 42): Promise<Sample[]> {
   const stream: Stream = { seed, ...generate(seed) };
   const run = await replayStream(stream);
   const label = new Map(stream.labels.map((l) => [l.eventId, l]));
-  const batches = AGENTS.map((a) => batchSample(a, stream.events, run, label)).filter((b) => b.attacks.length > 0);
+  const uaShare = browserShares(stream.accounts);
+  const batches = AGENTS.map((a) => batchSample(a, stream.events, run, label, uaShare)).filter((b) => b.attacks.length > 0);
   return [...batches, ...decisionSamples(run, stream, label)];
 }
 
 /** The window of BATCH events the agent handles with the most attack events in it: the hardest test of what it shares. */
-function batchSample(agent: Agent, events: TripwireEvent[], run: RunRecord, label: Map<string, Label>): BatchSample {
+function batchSample(agent: Agent, events: TripwireEvent[], run: RunRecord, label: Map<string, Label>, uaShare: (ua: string) => number): BatchSample {
   const handled = events.filter((e) => agent.handles(e));
   const isAttack = (e: TripwireEvent) => label.get(e.id)?.attack === true;
   let best = 0;
@@ -49,6 +52,7 @@ function batchSample(agent: Agent, events: TripwireEvent[], run: RunRecord, labe
   return {
     kind: "batch", id: `batch:${agent.name}`, agent, events: window,
     readings: run.findings.filter((f) => f.agent === agent.name && ids.has(f.eventId)),
+    patterns: patternReadings(patternWindow(window, handled.slice(0, start)), uaShare),
     attacks: window.filter(isAttack).map((e) => e.id),
     ruleFlags: [...new Set(run.signals.filter((s) => s.agent === agent.name && ids.has(s.eventId)).map((s) => s.eventId))],
   };
@@ -78,58 +82,6 @@ function decisionSamples(run: RunRecord, stream: Stream, label: Map<string, Labe
 
 const ruleOf = (d: Decision) => d.signalsUsed[0]!.split("/")[1]!;
 export const keyOf = (s: RiskSignal) => `${s.eventId}/${s.ruleId}`;
-
-/** One line per event, with what a fraud analyst would look at. */
-export function describe(e: TripwireEvent): string {
-  const client = "deviceId" in e ? ` | ip ${e.ip} ${e.geo.city},${e.geo.country} device ${e.deviceId} ua "${e.userAgent}"` : "";
-  return `${e.id} ${e.ts.slice(0, 19).replace("T", " ")} ${e.accountId} ${e.kind} ${details(e)}${client}`;
-}
-
-type Of<K extends TripwireEvent["kind"]> = Extract<TripwireEvent, { kind: K }>;
-const DETAILS: { [K in TripwireEvent["kind"]]: (e: Of<K>) => string } = {
-  login: (e) => (e.success ? `success via ${e.method}` : `failed (${e.failureReason ?? "unknown"}) via ${e.method}`),
-  password_reset: (e) => `via ${e.channel}`,
-  account_change: (e) => `${e.field} changed via ${e.channel}`,
-  support_contact: (e) => `${e.channel}, intent ${e.intent}, caller ${e.callerPhone} in ${e.callerGeo.city},${e.callerGeo.country}, `
-    + `verified by ${e.verification.method}: ${e.verification.passed ? "passed" : "failed"}`,
-  transaction: (e) => {
-    const payee = e.payeeId ? ` to ${e.payeeId}${e.payeeIsNew ? " (new payee)" : ""}` : "";
-    const merchant = e.merchantId ? ` at ${e.merchantId} (${e.merchantCategory ?? "unknown"})` : "";
-    return `${e.type} ${rupees(e.amountMinor)} ${e.status}${payee}${merchant}`;
-  },
-  step_up_result: (e) => `one-time code ${e.passed ? "passed" : "failed"}`,
-};
-const details = (e: TripwireEvent) => (DETAILS[e.kind] as (e: TripwireEvent) => string)(e);
-
-const typesOf = (agent: Agent) => [...new Set([...agent.rules, ...agent.contextRules].map((r) => r.type))];
-
-export function batchPrompt({ agent, events, readings }: BatchSample): Prompt {
-  const rules = [...agent.rules, ...agent.contextRules];
-  const types = typesOf(agent).map((t) => `- ${t}: ${rules.filter((r) => r.type === t).map((r) => r.when).join("; or ")}`);
-  const system = [
-    `You are the ${agent.name} agent of Tripwire, which detects account takeovers at a payments app. You read every event you handle, in batches, and share risk signals with the other agents and the decision agent.`,
-    "- Rule readings are measurements from fixed checks. Use them as evidence, not verdicts: a reading can be noise, and an event without one can still be risky.",
-    "- Look across the whole batch: the same device, IP address or browser on many accounts, a steady rhythm, a burst of failures, money moving soon after a change.",
-    `- Share a signal only for takeover risk you can state in one sentence. Score ${SHARE_AT} when it's worth sharing, 0.7 when strong, 0.9 when near certain. Sharing nothing is a fine answer.`,
-    "Signal types you may use (the rule behind each, for reference):",
-    ...types,
-  ].join("\n");
-  const lines = readings.map((f) => `${f.eventId} ${f.ruleId} ${f.score}: ${f.evidence}`);
-  const user = `Batch of ${events.length} events, oldest first:\n${events.map(describe).join("\n")}\n\nRule readings (event rule score: evidence):\n${lines.join("\n") || "none"}`;
-  const signal = {
-    type: "object",
-    properties: {
-      eventId: { type: "string", enum: events.map((e) => e.id) },
-      type: { type: "string", enum: typesOf(agent) },
-      score: { type: "number" },
-      evidence: { type: "string" },
-    },
-    required: ["eventId", "type", "score", "evidence"],
-    additionalProperties: false,
-  };
-  const schema = { type: "object", properties: { signals: { type: "array", items: signal } }, required: ["signals"], additionalProperties: false };
-  return { system, user, schemaName: "batch_review", schema };
-}
 
 export function decisionPrompt({ event, signals, profile }: DecisionSample, policy = readFileSync(join(KNOWLEDGE_DIR, POLICY_FILE), "utf8")): Prompt {
   const system = [
@@ -165,37 +117,21 @@ function accountLine(e: TripwireEvent, profile: AccountProfile | undefined): str
   return `Account ${e.accountId}: home ${profile.home.city},${profile.home.country}; ${profile.knownDevices.length} known devices${device}; ${profile.knownPayees.length} known payees${payee}.`;
 }
 
-export const promptFor = (s: Sample): Prompt => (s.kind === "batch" ? batchPrompt(s) : decisionPrompt(s));
+export const promptFor = (s: Sample): Prompt =>
+  (s.kind === "batch" ? reviewPrompt({ agent: s.agent, events: s.events, readings: s.readings, patterns: s.patterns }) : decisionPrompt(s));
 
-type Shared = { eventId?: unknown; type?: unknown; score?: unknown; evidence?: unknown };
-
-/** What a batch answer shares, and what's wrong with it: the checks steps 2 and 3 run before using an answer. */
+/** The events a batch answer flags (score ≥ WRITE_AT), and what's wrong with it. */
 export function checkBatch(json: unknown, { agent, events }: BatchSample): { flagged: string[]; problems: string[] } {
-  const signals = (json as { signals?: unknown } | undefined)?.signals;
-  if (!Array.isArray(signals)) return { flagged: [], problems: ["no signals list"] };
-  const ids = new Set(events.map((e) => e.id));
-  const types = new Set<unknown>(typesOf(agent));
-  const problems = (signals as Shared[]).flatMap((s, i) => signalProblems(s, ids, types).map((p) => `signal ${i}: ${p}`));
-  const flagged = (signals as Shared[]).filter((s) => typeof s.score === "number" && s.score >= SHARE_AT).map((s) => String(s.eventId));
-  return { flagged: [...new Set(flagged)], problems };
-}
-
-const isUnit = (x: unknown) => typeof x === "number" && x >= 0 && x <= 1;
-const isText = (x: unknown) => typeof x === "string" && x.trim() !== "";
-const problem = (ok: boolean, text: string) => (ok ? [] : [text]);
-
-function signalProblems(s: Shared, ids: Set<string>, types: Set<unknown>): string[] {
-  return [
-    ...problem(typeof s.eventId === "string" && ids.has(s.eventId), `event ${String(s.eventId)} isn't in the batch`),
-    ...problem(types.has(s.type), `type ${String(s.type)} isn't one of the agent's`),
-    ...problem(isUnit(s.score), `score ${String(s.score)} isn't between 0 and 1`),
-    ...problem(isText(s.evidence), "no evidence"),
-  ];
+  const { proposed, problems } = checkReview(json, agent, events);
+  return { flagged: [...new Set(proposed.filter((s) => s.score >= WRITE_AT).map((s) => s.eventId))], problems };
 }
 
 type Answer = { action?: unknown; risk?: unknown; cites?: unknown; reasoning?: unknown; need_more?: unknown };
 const ACTIONS = new Set<unknown>(["ALLOW", "STEP_UP", "BLOCK"]);
 const ENTITY = /^(ip|device|payee):\S+$/;
+const isUnit = (x: unknown) => typeof x === "number" && x >= 0 && x <= 1;
+const isText = (x: unknown) => typeof x === "string" && x.trim() !== "";
+const problem = (ok: boolean, text: string) => (ok ? [] : [text]);
 
 /** A decision answer's action, and what's wrong with it: the guardrails of step 3, checked here on the drafts. */
 export function checkDecision(json: unknown, { signals }: DecisionSample): { action: Action | undefined; problems: string[] } {
