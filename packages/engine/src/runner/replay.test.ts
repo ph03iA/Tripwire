@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { generate } from "../generator/generate.js";
+import { dryMeko } from "../meko/dry.js";
 import type { Label, TripwireEvent } from "../types.js";
 import { replay, replayStream, type RunRecord } from "./replay.js";
 
@@ -145,4 +146,51 @@ test("a failed step-up stops the attacker: their device is refused everywhere, a
   assert.deepEqual(record.denied.map((d) => [d.eventId, d.rule, d.stopEventId]), [["l1", "lock.device", "p1"], ["p2", "lock.unverified-device", "p1"]]);
   assert.deepEqual(record.stepUps.map((s) => [s.id, s.passed]), [["z1-otp", true], ["p1-otp", false], ["p3-otp", true]]);
   assert.equal(record.events, stream.length);
+});
+
+// ON mode, against the in-process stand-in for Meko: the same pipeline a live run takes, with ideal search.
+const dry = dryMeko();
+let dryRun: RunRecord | undefined;
+const onDry = async () => (dryRun ??= await replayStream({ seed: 42, events, labels, accounts },
+  { mode: "dry", mcp: dry, datapacks: { signals: "dry-signals", patterns: "dry-patterns" }, wait: async () => {} }));
+const phase = (chainId: string) => async (r: RunRecord) => r.metrics!.chains.find((c) => c.chainId === chainId)!.stoppedAt;
+
+test("ON (dry): shared signals stop s2 at the reset and s1 and s5 at the email change, a phase earlier than OFF", async () => {
+  const [on, off] = [await onDry(), await run()];
+  assert.equal(on.error, undefined);
+  assert.equal(on.meko, "dry");
+  assert.deepEqual(await Promise.all(["s1", "s2", "s5"].map((c) => phase(c)(on))), [3, 2, 3]);
+  assert.deepEqual(await Promise.all(["s1", "s2", "s5"].map((c) => phase(c)(off))), [4, 3, 4]);
+  assert.ok(on.metrics!.prevented > off.metrics!.prevented && on.metrics!.caughtEarly > off.metrics!.caughtEarly);
+});
+
+test("ON (dry): every STEP-UP and BLOCK has its own trace turn, and every other event is in the allow ledger (C4, C5)", async () => {
+  const record = await onDry();
+  const flagged = record.decisions.filter((d) => d.action !== "ALLOW");
+  for (const d of flagged) {
+    const turns = dry.conversations.get(d.conversationId!)!.messages.filter((m) => m.output.startsWith(`Decision for ${d.eventId}\n`));
+    assert.equal(turns.length, 1, d.eventId);
+    assert.equal(d.quotes.length, 2, "a playbook passage and a policy passage");
+    assert.ok(d.retrievals.every((r) => r.conversationId === d.conversationId), "searches are filed under the case (K11)");
+  }
+  const ledger = dry.conversations.get(record.conversations!.ledger)!.messages.map((m) => m.output).join("\n");
+  const listed = new Set(ledger.match(/\bevt_\d{6}\b/g));
+  const own = new Set(flagged.map((d) => d.eventId));
+  assert.deepEqual(events.filter((e) => !own.has(e.id) && !listed.has(e.id)).map((e) => e.id), [], "no event is left out");
+  assert.ok(record.denied.length > 0 && record.denied.every((d) => ledger.includes(`${d.eventId} ${d.accountId}`)));
+  const inputs = new Set([...dry.conversations.values()].flatMap((c) => c.messages.map((m) => m.input)));
+  assert.equal(inputs.size, 2, "R8: every turn's user input is one of two fixed, fact-free lines");
+});
+
+test("ON (dry): the hygiene audit leaves only this run's signals, and the same seed gives the same decisions", async () => {
+  const record = await onDry();
+  assert.equal(record.audit!.kept, record.signals.length);
+  assert.ok(record.audit!.deleted > 0, "the memories Meko mined from turns were deleted");
+  assert.deepEqual(new Set(dry.memories.keys()), new Set(record.signals.map((s) => s.memoryId)));
+  const again = await replayStream({ seed: 42, events, labels, accounts },
+    { mode: "dry", mcp: dryMeko(), datapacks: { signals: "dry-signals", patterns: "dry-patterns" }, wait: async () => {} });
+  // A run's conversation IDs are hashed from its run ID, which carries the start time, so they're the one other thing that differs.
+  const comparable = (r: RunRecord) => r.decisions.map((d) => ({ ...d, latencyMs: 0, conversationId: "",
+    retrievals: d.retrievals.map((x) => ({ ...x, conversationId: "" })) }));
+  assert.deepEqual(comparable(again), comparable(record));
 });

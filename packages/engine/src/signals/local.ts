@@ -6,7 +6,9 @@ export const RECALL_WINDOW_MS = 72 * 3_600_000; // PRD C2: signals older than 72
 export type SignalStore = {
   write(s: RiskSignal): Promise<void>;
   recall: Recall;
-  /** Whether the decision on an event this agent owns may use the signal: in OFF mode, only the owner's own (PRD R4). */
+  /** Earlier signals the decision on an event this agent owns may use: in OFF mode, only the owner's own (PRD R4). */
+  forDecision(owner: AgentName, e: TripwireEvent): Promise<RiskSignal[]>;
+  /** Whether that decision may use a signal on the event itself. */
   sees(owner: AgentName, s: RiskSignal): boolean;
 };
 
@@ -24,15 +26,15 @@ const sharedValue = (a: string | undefined, b: string | undefined) => a !== unde
 /** OFF mode (PRD R4): each agent keeps its own signals in process and recalls only those. */
 export function localSignals(): SignalStore {
   const byAgent = new Map<AgentName, RiskSignal[]>();
+  const recall: Recall = async (agent, e) => (byAgent.get(agent) ?? []).filter((s) => isRelevant(s, e));
   return {
     async write(s) {
       const own = byAgent.get(s.agent) ?? [];
       own.push(s);
       byAgent.set(s.agent, own);
     },
-    async recall(agent, e) {
-      return (byAgent.get(agent) ?? []).filter((s) => isRelevant(s, e));
-    },
+    recall,
+    forDecision: async (owner, e) => (await recall(owner, e)).filter((s) => s.eventId !== e.id),
     sees: (owner, s) => s.agent === owner,
   };
 }

@@ -42,6 +42,7 @@ The REST API has **no** memory-add, memory-search or knowledge-search endpoints.
 | Memory searches (`memory_search`) | 1,000 / month (the Usage page, K8; the docs say 10,000 retrievals) |
 | KB searches (`knowledgebase_search`) | 1,000 / month (K8) |
 | Memory adds (`memory_add`) | 10,000 / month; Meko's own extraction isn't counted (K8) |
+| Not counted | `conversation_create` and `memory_get_all`: the spike sent 15 and 19, and the Usage page counted neither (K8) |
 | Datapacks | 10 **created ever** (deleting doesn't free a slot) |
 | Knowledge storage | 100 MB, 5 MB per file |
 | Artifacts | 5 MB each, expire 30 days after last access |

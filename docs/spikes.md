@@ -26,6 +26,7 @@ Every check writes only to a disposable `tripwire-spike` datapack, which the scr
 - Some answers carry the account owner's name and email: `memory_get_all` rows and `GET /datapacks`. Raw answers are never logged.
 - Datapack names are unique per account (409 on a repeat), and `GET /datapacks?name=…&limit=1` finds one by exact name.
 - REST allows 60 requests a minute per key (burst 10, `Retry-After: 60`) and 10 a second per IP.
+- `conversation_create` and `memory_get_all` aren't counted in the quota: the spike sent 15 and 19 of them, and the Usage page counted only the 5 `conversation_add_message` calls and the 17 memory searches. So an ON run can open a case conversation for every account it touches.
 - The portal's Conversations list shows only conversations that have a message. Observe (Langfuse) shows every trace, and its times are in the viewer's local time zone.
 - Each `conversation_add_message` trace includes Meko's own memory extraction: "Create a new memory in Mem0", with OpenAI embedding and generation spans and an estimated cost (2 calls, about 16,000 tokens for the K10 ledger turn sent twice). Tripwire makes no LLM calls, so the README and the trace walkthroughs must say these spans are Meko's.
 

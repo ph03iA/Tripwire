@@ -41,18 +41,19 @@ packages/engine/src/
     index.ts               AGENTS, ownerOf(), detect(), noisyOr()
   knowledge/render.ts      renders knowledge/risk-rules.md from the agents' rules
   knowledge/upload.ts      uploads knowledge/ into tripwire-patterns; npm run upload-knowledge
+  agents/decision.ts       decision agent: triggers, risk, policy, reasoning (pure)
   signals/local.ts         OFF mode: each agent's own signals, in process
+  signals/meko.ts          ON mode: everyone's signals through Meko, one search per event
+  config.ts                env parsing and validation
+  meko/mcp.ts rest.ts      Meko client; retry.ts holds the retry policy, spike.ts the week-1 checks
+  meko/dry.ts              in-process stand-in for Meko: --meko dry, and the tests' Meko
   runner/replay.ts         the world simulator: replay loop, run record
+  runner/outcomes.ts       stops, step-ups, locks
+  runner/trace.ts          run, case and ledger conversations, quotes, trace turns, the R8 audit
+  runner/quota.ts          monthly quota guard
   runner/cli.ts            npm run replay
+  metrics.ts               scoring against labels
   ── later milestones ──
-  config.ts                env parsing and validation (M0, with the Meko client)
-  meko/mcp.ts rest.ts      Meko client (M0); retry.ts holds the retry policy, spike.ts the week-1 checks
-  log.ts                   JSON-lines logger to stderr (M2, with the ON runner)
-  signals/meko.ts          ON mode signal store (M2)
-  agents/decision.ts       decision agent (M2)
-  runner/outcomes.ts       stops, step-ups, prevention (M2)
-  runner/quota.ts          monthly quota ledger and guard (M2)
-  metrics.ts               scoring against labels (M2)
   agents/analyst.ts        pattern drafts, incident reports (M3)
   server/                  Hono + SSE for the dashboard (M4)
 packages/dashboard/        React + Vite (M4–M5)
@@ -182,7 +183,7 @@ replayStream({ seed, events, labels, accounts }): Promise<RunRecord>  // the sam
 - **Any error stops the run.** That includes opening or closing the store. A record with `status: "failed"` and the first error is still written.
 - **No silent fallback.** A run never falls back from ON to OFF, because that would corrupt the comparison.
 
-`--meko on` fails with a clear message until the Meko client lands (M0/M2).
+`--meko off` makes no Meko calls. `--meko dry` runs the ON pipeline against `meko/dry.ts` and reports the calls a live run would make. `--meko on` runs that dry pass first, then the quota guard, then the live run, and appends what it sent to `runs/quota.jsonl`. An ON run prints one progress line per simulated day: a logger module wasn't needed.
 
 ## 6. Later milestones: contracts to honor
 
@@ -195,7 +196,7 @@ These are fixed now so that earlier code doesn't box them in; each lands in its 
 
   A missing or malformed value fails at startup with a message naming the variable, never its value. Both URLs must be https. The key is never logged.
 
-  The working datapacks have fixed names (`tripwire-signals`, `tripwire-patterns`) and are looked up by name with `GET /datapacks`, so no datapack IDs need configuring. `TRIPWIRE_LOG_LEVEL` comes with `log.ts` in M2, when the ON runner first has something to log.
+  The working datapacks have fixed names (`tripwire-signals`, `tripwire-patterns`) and are looked up by name with `GET /datapacks?name=…`, so no datapack IDs need configuring.
 - **Meko client (M0):**
   - MCP through `@modelcontextprotocol/sdk` (`StreamableHTTPClientTransport`). REST through `fetch`.
   - Both send `Authorization: Bearer` and `User-Agent: tripwire/<version>`, with a 10 s timeout. REST refuses any URL outside the API base, so the key never reaches another host. The knowledge-base upload's POST to storage (M1) is a separate request, sent without it.
@@ -205,7 +206,7 @@ These are fixed now so that earlier code doesn't box them in; each lands in its 
     | --- | --- | --- |
     | Reads: searches, gets, lists, document status | Retry | Retry |
     | Idempotent writes: `artifact_put` (keyed by content hash), datapack create (a repeat returns 409), `conversation_create` with a `session_id` and `conversation_add_message` with a `seed` (a repeat returns the same ID and stores nothing new, K10) | Retry | Retry |
-    | `memory_add` | Retry (the request was refused, not processed) | **Never resend.** A receipt without a memory ID (`results[0].id`) is the same unknown outcome. Look for the signal's stable key (event ID + rule ID, in its text and metadata) with `memory_search` scoped to the run and in `memory_get_all`, a few times over about 5 s (K1 found a write on the first search, 1.1 s after it returned, in its one sample). A hit confirms the write. A miss proves nothing, because the first write may still be in flight, so the write stays unresolved: record the run as failed and stop. |
+    | `memory_add` | Retry (the request was refused, not processed) | **Never resend.** A receipt without a memory ID (`results[0].id`) is the same unknown outcome. Look for the signal's stable key (event ID + rule ID, in its text and metadata) in `memory_get_all`, which spends no search quota, a few times over about 5 s (K1 found a write on the first search, 1.1 s after it returned, in its one sample). A hit confirms the write. A miss proves nothing, because the first write may still be in flight, so the write stays unresolved: record the run as failed and stop. |
     | `memory_promote` (or REST `POST /promote-memories`) | Retry | Check the promoted list for the ID first; promote again only if it's absent. A repeat is harmless: it returns the ID in `not_found_ids` (K4). |
 
     Conversation writes always carry their dedupe key, so a retry stores nothing new. `seed` is the run ID plus the event ID (or the ledger day). `session_id` is a 32-hex hash of the run ID and the case key: Meko's docs say a hex `session_id` becomes the conversation ID unchanged, so the ID is known before the call (confirmed on 2026-11-24, K10). A retry still has a side effect: Meko may extract a memory from each call it accepts (K10's two sends of one turn left two), and hygiene deletes them. When all 3 attempts fail, the outcome is unknown, and the recovery depends on the write:
@@ -215,26 +216,29 @@ These are fixed now so that earlier code doesn't box them in; each lands in its 
     Retries use 3 attempts with exponential backoff and jitter (0.5 s → 4 s). They honor `Retry-After`, in seconds or as an HTTP date, over MCP too: the SDK drops a 429's headers, so the client reads them first. A wait longer than 60 s isn't shortened: the error is surfaced instead. Only a clear refusal fails at once: a 4xx other than 429, a JSON-RPC error other than an internal one, or a tool that answered with an error. Anything else may have been applied, including a success whose body can't be read and a `write-once` answer that isn't a JSON receipt. `meko/retry.ts` holds the policy: callers name the operation (`read`, `idempotent`, `write-once`), and a `write-once` call whose outcome is unknown throws `UnknownOutcomeError` instead of being resent.
   - Every response is checked by a type guard before use. An unexpected shape is an error, not a guess. So is an answer that carries `error`: Meko reports some failures inside a successful answer, such as `{"error": "conversation_id_required"}`.
   - Every call is counted for the quota ledger (R7).
-- **ON signal store (M2):** `memory_add` with `agent_id`, the run's conversation as `conversation_id`, and metadata (stable key, entities). Recall uses `memory_search` with `run_id` set to the run conversation, so a run only sees its own signals (K2). A result counts only if all three hold:
+- **ON signal store (M2, `signals/meko.ts`):** `memory_add` with `agent_id`, the run's conversation as `conversation_id`, one line of text naming every entity, and metadata (stable key, entities). Recall uses `memory_search` with `run_id` set to the run conversation, so a run only sees its own signals (K2). A result counts only if all three hold:
   - its ID was written by this run (provenance, R8);
   - it names the same entity, since the search also returns unrelated rows above its 0.2 similarity floor;
   - it falls inside the 72-hour window.
 
-  Every search becomes a `Retrieval` record (C3).
-- **Hygiene (M2, R5, R8):** an ON run starts by deleting every memory of the four detection agents and of `tripwire:decision` in its datapack (`memory_delete_all` per agent, repeated until `complete`). Meko extracts a memory from each trace or ledger turn's user input within about 30 s, under the conversation's agent ID (K6), and a retried call can be extracted again (K10). So the run ends by waiting at least 60 s after its last conversation call, retries included, and then deleting `tripwire:decision`'s memories again. The R8 audit lists them once more after that delete, so a late extraction can't slip past it. The decision agent writes turns but never writes memories of its own.
+  An event gets at most one memory search, made when an agent or the decision agent first needs it, and shared by all of them: in ON mode they all see the same signals, so they would ask the same thing. The signals written on the event itself are added locally. The search carries the account's case conversation as `conversation_id`, so the portal shows it in that case's trace (K11). Every search becomes a `Retrieval` record (C3).
+
+  **A7, waiting for new signals,** happens where it matters: when a search misses a signal this run wrote in the last 30 s that the event should see, it's repeated after 2 s and then 4 s. A miss after that is recorded as `timedOut` and the run goes on. An older miss is the search's ranking, not indexing, so it isn't retried. On seed 42 the dry run makes 273 memory searches.
+- **Hygiene (M2, R5, R8):** an ON run starts by deleting every memory of the four detection agents and of `tripwire:decision` in its datapack (`memory_delete_all` per agent, repeated until `complete`). Meko extracts a memory from each trace or ledger turn's user input within about 30 s, under the conversation's agent ID (K6), and a retried call can be extracted again (K10). So the run ends by waiting at least 60 s after its last conversation call, retries included, and then deleting `tripwire:decision`'s memories again. The R8 audit then lists every memory in the datapack, deletes any this run didn't write, and lists again: anything left fails the run. The decision agent writes turns but never writes memories of its own. A run that fails before its end skips the audit, and the next run's start-of-run delete clears what it left.
 - **Decision agent (M2, `agents/decision.ts`, pure):**
   - Triggers per C1: every account change (email, phone, password, payout method, 2FA), password reset, transfer and payout, a card charge of ₹10,000 or more, and any event with a signal ≥ 0.7. Everything else is allowed without review, with a one-line reason.
   - It sees the signals its mode allows, through the same `SignalStore`: in OFF mode only the owning agent's, earlier and on the event itself; in ON mode everyone's. Earlier ones are already filtered to the same account, device, IP or payee within 72 h.
   - Risk is the noisy-OR of the strongest signal per type. A tie goes to the newer signal, then the lower event ID, so the input order never changes a decision.
   - Policy: ≥ 0.8 BLOCK, 0.5–0.8 STEP-UP, else ALLOW. A known device plus travel alone is capped at STEP-UP: a BLOCK whose only signals are impossible travel, on a device in the profile. `knowledge/step-up-policy.md` states the same numbers, and a test checks it.
   - The reason is a template over the decision record, so nothing is generated text. `rulesApplied` lists the rules behind the signals used, then the policy rule (`policy.block`, `policy.step-up`, `policy.allow` or `policy.travel-cap`).
-  - **Traces:**
-    - Each STEP-UP and BLOCK gets its own trace turn (C4).
-    - Every ALLOW, with or without signals, goes into the daily allow ledger with its reason, signals and searches (C5).
-    - Seed 42 has 275 decision triggers, 90 of them with a shared signal on the event itself. One turn per signal-backed ALLOW wouldn't fit the 120-call ceiling, while STEP-UPs and BLOCKs should number in the tens.
-- **Dry run (M2, before the first ON run):** `--meko dry` runs the whole ON pipeline against an in-process stand-in for Meko and reports the conversation calls and searches the run would make. The quota guard and the PRD §9 ceiling are checked against these measured numbers, not estimates.
+  - **Traces (`runner/trace.ts`):**
+    - Each account gets one case conversation per run, opened at its first Meko call (`session_id` = hash of the run ID and `case:<account>`). `conversation_create` isn't counted in the quota (K8).
+    - Each STEP-UP and BLOCK gets its own turn in the case (C4): the decision record as output, the reasoning, and a plan that ends with the outcome. Before it, two `knowledgebase_search` calls in `tripwire-patterns`, filed under the case, fetch the playbook passage and the policy passage it quotes (C3). ALLOWs get no quotes.
+    - Every other event goes into the daily allow ledger, one line each with its reason, signals and searches (C5): unreviewed ALLOWs, reviewed ALLOWs with their risk, and events refused after a stop with the rule. A day is sent when the next one starts, in parts of at most 12,000 characters (K10 stored 13,149 whole). Seed 42 needs 53 conversation messages in all.
+    - Every turn's user input is one of two fixed lines that state no facts (R8).
+- **Dry run (M2, before the first ON run):** `--meko dry` runs the whole ON pipeline against an in-process stand-in for Meko (`meko/dry.ts`) and reports the conversation calls and searches the run would make. The stand-in answers with the shapes the live API gave in the week-1 checks, searches by ideal keyword match, and mines a memory from each turn as Meko does (K6), so the audit runs too. The quota guard and the PRD §9 ceiling are checked against these measured numbers, not estimates.
 - **Outcomes (M2, `runner/outcomes.ts`):** R2 and R3. The runner answers a step-up from the labels: the owner passes and an attacker fails. A stop (a BLOCK or a failed step-up) locks the device that triggered it on every account (`lock.device`). It also makes the account refuse payments, password resets and account changes from any device outside its profile that hasn't passed a step-up on it (`lock.unverified-device`): that is the "verified history". A refused event is never scored or stored, since the app turns it away at the door. Prevention is computed from what the runner refused (PRD §8): a chain is prevented when its takeover event was refused, and stopped at the phase of its first refused event.
-- **Quota guard (M2):** `runs/quota.json` keeps a per-month ledger of conversation calls, memory searches and KB searches, the three counters Meko caps on the Free plan (K8). An ON run refuses to start when its ceiling (PRD §9) doesn't fit the remainder.
+- **Quota guard (M2, `runner/quota.ts`):** every ON run appends what it sent to `runs/quota.jsonl`, in the same line shape as the spike's `runs/spike/attempts.jsonl`. The guard adds up both logs for the current UTC month into the three counters Meko caps on the Free plan (K8): conversation messages, memory searches and KB searches. An ON run refuses to start when the dry pass's counts plus 25% don't fit what's left. `shortcut:` the Free limits are hard-coded, and the month is the calendar month, since the reset day is unknown.
 - **Learning loop (M3):** L1–L4 exactly as the PRD states. Each pattern gets its own approval conversation, a `memory_add` linked to it, `memory_promote`, and confirmation in the promoted list (K4). Patterns are found with `knowledgebase_search`; a hit with `metadata_filters.source: "memory"` is a learned pattern, and anything else is a playbook passage (K3). A promoted pattern can't be deleted (K7), so each evaluation run starts from a fresh patterns datapack (R5).
 
 ## 7. Testing
@@ -247,7 +251,8 @@ These are fixed now so that earlier code doesn't box them in; each lands in its 
 | Unit | Decision triggers, policy, travel cap, tie-breaking, reasoning; metrics from refusals | `agents/decision.test.ts`, `metrics.test.ts` |
 | Integration | OFF replay of seed 42: completes, writes the planted scenarios' expected signals, stops each chain where the design's OFF column expects; locks and step-ups on a hand-built stream | `runner/replay.test.ts` |
 | Generator | Determinism, size, chains, no attack-only values, traveler fixture, CLI | `generator/generate.test.ts` (done) |
-| Live (later) | ON mode against real Meko, opt-in with `TRIPWIRE_LIVE=1`. Never in CI: it needs secrets and spends quota. | `*.live.test.ts` |
+| ON mode | The ON store, trace recovery after a lost answer, the R8 audit, the ledger, the quota guard, and a dry replay of seed 42, all against the stand-in | `signals/meko.test.ts`, `runner/trace.test.ts`, `runner/quota.test.ts`, `runner/replay.test.ts` |
+| Live | ON mode against real Meko is run by hand (`--meko on`), never in tests or CI: it needs the key and spends quota. | |
 
 Tests run with `node:test` through `tsx --test`; there is no test framework dependency.
 
