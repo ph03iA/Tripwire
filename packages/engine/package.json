@@ -5,6 +5,7 @@
   "scripts": {
     "generate": "tsx src/generator/index.ts",
     "knowledge": "tsx src/knowledge/index.ts",
+    "upload-knowledge": "tsx src/knowledge/upload-cli.ts",
     "replay": "tsx src/runner/cli.ts",
     "spike": "tsx src/meko/spike.ts",
     "test": "tsx --test \"src/**/*.test.ts\"",

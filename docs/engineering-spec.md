@@ -40,6 +40,7 @@ packages/engine/src/
     geo.ts                 city coordinates for impossible travel
     index.ts               AGENTS, ownerOf(), detect(), noisyOr()
   knowledge/render.ts      renders knowledge/risk-rules.md from the agents' rules
+  knowledge/upload.ts      uploads knowledge/ into tripwire-patterns; npm run upload-knowledge
   signals/local.ts         OFF mode: each agent's own signals, in process
   runner/replay.ts         the world simulator: replay loop, run record
   runner/cli.ts            npm run replay
@@ -271,4 +272,9 @@ TypeScript stays on 6.0.x until typescript-eslint supports 7 (it needs the TypeS
 | 6 | `feat/meko-client` | Config, MCP and REST clients with the retry policy, spike script for K1–K11 | M0, K9 | `main` |
 | 7 | `docs/meko-spikes` | K1–K11 answers in `docs/spikes.md`; spec, design and API notes updated to match | K1–K11 | `feat/meko-client` |
 | 8 | `docs/week1-followups` | K7, K8 and K11 answered in the portal; search quota corrected; M0 and M1 ticked | K7, K8, K11 | `main` |
-| 9+ | M2 onward | ON signals, decision agent, outcomes, traces and ledger, hygiene audit, metrics, quota guard; then M3–M6 per the plan | | |
+| 9 | `fix/spike-private-fields` | The spike's saved answers also drop `promoted_by_*` and `uploaded_by_email` | | `main` |
+| 10 | `feat/kb-upload` | Knowledge-base upload script | A5, C2 | `main` |
+| 11 | `feat/decisions` | Decision agent, stops and step-ups, metrics, in OFF mode | C1–C3, R2, R3, §8 | `feat/kb-upload` |
+| 12 | `feat/meko-on` | ON signal store, traces and allow ledger, hygiene audit, `--meko dry`, quota guard | A5–A7, C3–C5, R5, R7, R8 | `feat/decisions` |
+| 13 | `docs/m2-results` | ON vs OFF table for seed 42 from the first live run | §8 | `feat/meko-on` |
+| 14+ | M3 onward | Analyst agent, approvals and learnings; then M4–M6 per the plan | | |

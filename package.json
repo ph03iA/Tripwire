@@ -10,6 +10,7 @@
   "scripts": {
     "generate": "npm run generate -w @tripwire/engine --",
     "knowledge": "npm run knowledge -w @tripwire/engine",
+    "upload-knowledge": "npm run upload-knowledge -w @tripwire/engine",
     "replay": "npm run replay -w @tripwire/engine --",
     "spike": "npm run spike -w @tripwire/engine --",
     "test": "npm test -w @tripwire/engine",

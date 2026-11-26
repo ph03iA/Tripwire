@@ -11,7 +11,7 @@ Read from docs.mekodata.ai on 2026-11-22. Pages: Datapack API, MCP Server refere
 | Search playbooks, rules and approved patterns | **MCP** | `knowledgebase_search` (hybrid semantic + keyword). It is the only search that finds promoted patterns (K3). |
 | Decision traces | **MCP** | `conversation_create`, `conversation_add_message` (with `reasoning` and `plan`). `track_token_usage` exists for LLM spend, but Tripwire makes no LLM calls. |
 | Create datapacks | REST | `POST /datapacks`. MCP's `datapack_create` also needs a conversation, which needs a datapack (K9). |
-| Upload playbooks to the knowledge base | REST | `POST /datapacks/{id}/knowledge-bases/upload-url`, then a multipart POST to storage (without the Meko key: the REST client sends it only to the API), then poll `status_url` |
+| Upload playbooks to the knowledge base | REST | `POST /datapacks/{id}/knowledge-bases/upload-url` with the file's SHA-256, then a multipart POST to storage (without the Meko key: the REST client sends it only to the API), then poll `document-status`. Bytes already stored answer `already_uploaded: true`, so `npm run upload-knowledge` re-sends only changed files, deleting a changed file's older document first. |
 | Incident reports and pattern drafts | REST | `POST /datapacks/{id}/artifacts`, `GET /datapacks/{id}/artifacts/{content_hash}` |
 | Analyst approval → learning | MCP | `memory_add` linked to an approval conversation, then `memory_promote`. REST `POST /promote-memories` does the same. |
 

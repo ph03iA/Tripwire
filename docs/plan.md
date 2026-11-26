@@ -48,7 +48,7 @@ Requirement IDs (D1, A1, C1, …) refer to the [PRD](prd.md). In the tables, **Y
 | --- | --- |
 | ✅ Postgres store (PGlite, K5): events table, device↔account and payee↔account views. The runner inserts each event as it replays. | D4 |
 | ✅ Knowledge docs in `knowledge/`: fraud playbooks (one per attack type), `risk-rules.md`, `step-up-policy.md` | A5, C2 |
-| Upload script for the knowledge docs into `tripwire-patterns` | A5, C2 |
+| ✅ Upload script for the knowledge docs into `tripwire-patterns` (`npm run upload-knowledge`) | A5, C2 |
 | ✅ Runner: fast mode, `--meko off`, run record. The quota guard moved to M2, with the ON runner (spec §6). | R1, R4, R6 |
 | ✅ All four detection agents in OFF mode, reading the account profiles, with tests | A1–A5, D6 |
 
