@@ -9,7 +9,14 @@ Three runs of the same stream:
 - **ON, dry:** the full ON pipeline against the in-process stand-in for Meko, whose search is ideal (every matching signal comes back).
 - **ON, live:** the first run against Meko itself, run `42-on-2026-11-26T15-40-33-011Z`.
 
-The OFF and dry columns come from the code after the review fixes (#9–#12). The live run used the code before them, so its chains and call counts stand as measured. Its rates are recomputed from its record with the corrected definitions. Of the fixes, the stopped-payout history (review finding 2) and the quote checks (finding 6) could change a live decision. A second live run would re-measure.
+The OFF and dry columns come from the code after the review fixes (#9–#12). The live run used the code before them, so its chains and call counts stand as measured. Its rates are recomputed from its record with the corrected definitions. The second live run (`42-on-2026-11-26T17-17-27-003Z`), on the fixed code, gave the same result on every count.
+- **Same results:** every chain was stopped at the same phase, legit BLOCKs and STEP-UPs matched, and so did the calls by tool (311 memory searches).
+- **Recall:** 53 of 109 (0.49).
+- **Trace writes:** every one came back with a valid receipt. No `conversation_get` look-up was needed, so the receipt check matches what Meko answers.
+- **Quotes:** none is missing. The `risk-rules.md` playbook quote of the first run is now a `credential-stuffing.md` passage.
+- **Audit:** it passed, keeping the 149 signals and deleting 0 other memories.
+
+So on this seed, ON mode's live results are stable across runs.
 
 | | OFF | ON, dry | ON, live |
 | --- | --- | --- | --- |

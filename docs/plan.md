@@ -65,7 +65,7 @@ Exit check: `npm run replay -- --seed 42 --meko off` writes signals and a `runs/
 | ✅ Memory hygiene: fact-free user turns, ID-based trust, end-of-run audit | R8 |
 | ✅ `metrics.ts`: prevented and caught-early per chain, from what the runner executed | §8 |
 | ✅ Dry run first: `--meko dry` reports the conversation calls and searches a run needs, checked against the ceiling | R7, §9 |
-| Two live ON runs on seed 42. The first ran on 2026-11-26 ([results](results.md)); the second waits for the owner's OK, since the two together use about 60% of a month's Free memory searches. | |
+| ✅ Two live ON runs on seed 42, both on 2026-11-26, with the same results ([results](results.md)) | |
 
 ### M3 Memory pays off (Dec 14–20)
 
