@@ -21,9 +21,11 @@ export type Metrics = {
   avgStepsEarly: number | null; // over prevented chains
   lossPreventedMinor: number;
   lossAtRiskMinor: number;
-  legitSensitive: number; // the denominator for false positives and friction
-  legitBlocks: number; // false positives (PRD §8)
-  legitStepUps: number; // friction
+  legitSensitive: number; // legit sensitive events: the denominator for the two rates below
+  legitSensitiveBlocks: number; // false positives (PRD §8): BLOCKs on those events
+  legitSensitiveStepUps: number; // friction: STEP-UPs on those events
+  legitBlocks: number; // BLOCKs on any legit event, a login with a strong signal included
+  legitStepUps: number; // STEP-UPs on any legit event
   legitRefused: number; // legit events refused after a stop, their own decision included
 };
 
@@ -36,7 +38,9 @@ export function scoreRun(run: Scored, events: TripwireEvent[], labels: Label[]):
   const chains = chainResults(labels, byId, run.refused);
   const prevented = chains.filter((c) => c.prevented);
   const legit = new Set(labels.filter((l) => !l.attack).map((l) => l.eventId));
-  const legitActions = run.decisions.filter((d) => legit.has(d.eventId)).map((d) => d.action);
+  const legitDecisions = run.decisions.filter((d) => legit.has(d.eventId));
+  const sensitiveDecisions = legitDecisions.filter((d) => isSensitive(byId.get(d.eventId)!));
+  const count = (decisions: Scored["decisions"], action: string) => decisions.filter((d) => d.action === action).length;
   return {
     chains,
     prevented: prevented.length,
@@ -45,8 +49,10 @@ export function scoreRun(run: Scored, events: TripwireEvent[], labels: Label[]):
     lossPreventedMinor: prevented.reduce((n, c) => n + c.takeoverMinor, 0),
     lossAtRiskMinor: chains.reduce((n, c) => n + c.takeoverMinor, 0),
     legitSensitive: [...legit].filter((id) => isSensitive(byId.get(id)!)).length,
-    legitBlocks: legitActions.filter((a) => a === "BLOCK").length,
-    legitStepUps: legitActions.filter((a) => a === "STEP_UP").length,
+    legitSensitiveBlocks: count(sensitiveDecisions, "BLOCK"),
+    legitSensitiveStepUps: count(sensitiveDecisions, "STEP_UP"),
+    legitBlocks: count(legitDecisions, "BLOCK"),
+    legitStepUps: count(legitDecisions, "STEP_UP"),
     legitRefused: [...run.refused].filter((id) => legit.has(id)).length,
   };
 }
@@ -79,7 +85,8 @@ export function formatMetrics(m: Metrics): string {
     ...rows,
     `prevented ${m.prevented} of ${m.chains.length}, caught early ${m.caughtEarly}, avg steps early ${m.avgStepsEarly?.toFixed(2) ?? "–"}`,
     `loss prevented ${rupees(m.lossPreventedMinor)} of ${rupees(m.lossAtRiskMinor)}`,
-    `legit sensitive events ${m.legitSensitive}: BLOCK ${m.legitBlocks} (${percent(m.legitBlocks, m.legitSensitive)}), `
-      + `STEP-UP ${m.legitStepUps} (${percent(m.legitStepUps, m.legitSensitive)}); legit events refused after a stop ${m.legitRefused}`,
+    `legit sensitive events ${m.legitSensitive}: BLOCK ${m.legitSensitiveBlocks} (${percent(m.legitSensitiveBlocks, m.legitSensitive)}), `
+      + `STEP-UP ${m.legitSensitiveStepUps} (${percent(m.legitSensitiveStepUps, m.legitSensitive)})`,
+    `all legit events: BLOCK ${m.legitBlocks}, STEP-UP ${m.legitStepUps}; refused after a stop ${m.legitRefused}`,
   ].join("\n");
 }
