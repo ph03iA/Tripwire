@@ -13,6 +13,7 @@
     "upload-knowledge": "npm run upload-knowledge -w @tripwire/engine",
     "replay": "npm run replay -w @tripwire/engine --",
     "spike": "npm run spike -w @tripwire/engine --",
+    "llm-check": "npm run llm-check -w @tripwire/engine --",
     "test": "npm test -w @tripwire/engine",
     "typecheck": "npm run typecheck -w @tripwire/engine",
     "lint": "eslint ."

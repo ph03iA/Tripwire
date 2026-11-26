@@ -11,11 +11,16 @@ import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
  */
 export type Op = "read" | "idempotent" | "write-once";
 
-export class MekoError extends Error {
-  override name = "MekoError";
+/** An HTTP failure from an API we call (Meko, Groq or Gemini), with the wait it asked for. */
+export class HttpError extends Error {
+  override name = "HttpError";
   constructor(message: string, readonly status?: number, readonly retryAfterMs?: number) {
     super(message);
   }
+}
+
+export class MekoError extends HttpError {
+  override name = "MekoError";
 }
 
 /** The write may or may not have been applied. Never resend it: reconcile it, or fail the run. */
@@ -50,7 +55,7 @@ export async function withRetry<T>(what: string, op: Op, attempt: () => Promise<
 }
 
 /** Meko asked for a longer wait than the client gives a call: surface the error rather than retry early. */
-const asksTooLong = (err: unknown) => err instanceof MekoError && (err.retryAfterMs ?? 0) > MAX_WAIT_MS;
+const asksTooLong = (err: unknown) => err instanceof HttpError && (err.retryAfterMs ?? 0) > MAX_WAIT_MS;
 
 /**
  * `permanent` only when Meko clearly refused: a 4xx other than 429, a JSON-RPC error other than an internal one, or a
@@ -66,7 +71,7 @@ export function classify(err: unknown): Failure {
 }
 
 /** The HTTP status behind an error, if any: the SDK's StreamableHTTPError calls it `code` (-1 for an unreadable answer). */
-const statusOf = (err: unknown) => (err instanceof MekoError ? err.status : err instanceof StreamableHTTPError ? err.code : undefined);
+const statusOf = (err: unknown) => (err instanceof HttpError ? err.status : err instanceof StreamableHTTPError ? err.code : undefined);
 
 /** The wait a response asks for in its Retry-After header, given in seconds or as an HTTP date (RFC 9110), if any. */
 export function retryAfterMs(res: Response, now = Date.now()): number | undefined {
@@ -78,6 +83,6 @@ export function retryAfterMs(res: Response, now = Date.now()): number | undefine
 
 /** Retry-After when Meko sent one (a minute at most, see asksTooLong), else 0.5 s, 1 s, 2 s… with jitter. */
 function delayMs(tries: number, err: unknown): number {
-  if (err instanceof MekoError && err.retryAfterMs) return err.retryAfterMs;
+  if (err instanceof HttpError && err.retryAfterMs) return err.retryAfterMs;
   return Math.min(500 * 2 ** (tries - 1), 4000) + Math.floor(Math.random() * 250);
 }

@@ -26,6 +26,13 @@ export function mekoConfig(env: Record<string, string | undefined> = loadEnv()):
   };
 }
 
+/** A free LLM provider key (GROQ_API_KEY, GEMINI_API_KEY), read when first needed. Fails with the variable name, never the value. */
+export function llmKey(keyVar: string, env: Record<string, string | undefined> = loadEnv()): string {
+  const key = env[keyVar]?.trim();
+  if (!key) throw new ConfigError(`${keyVar} is missing: add it to .env`);
+  return key;
+}
+
 function loadEnv(): Record<string, string | undefined> {
   if (existsSync(ENV_FILE)) process.loadEnvFile(ENV_FILE);
   return process.env;
