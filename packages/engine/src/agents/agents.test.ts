@@ -170,8 +170,9 @@ test("routing, noisy-OR, recall threshold and signals", async () => {
 
   let recalls = 0;
   const recall = async () => (recalls++, []);
-  await detect(deviceAgent, ev("r2", 0, login(true)), ctx(), recall); // nothing fires: no recall
-  await detect(deviceAgent, ev("r3", 0, login(true, { userAgent: RARE_UA })), ctx(), recall); // 0.2 reaches the threshold
+  await detect(supportAgent, ev("r2", 0, call("otp", "other")), ctx(), recall); // nothing fires: no recall
+  await detect(supportAgent, ev("r3", 0, call("kba", "reset_password")), ctx(), recall); // 0.5 reaches the threshold
+  await detect(deviceAgent, ev("r3", 1, login(true, { userAgent: RARE_UA })), ctx(), recall); // 0.2, but no rule of its own reads recalled signals
   assert.equal(recalls, 1);
 
   const e = ev("r4", 0, pay("payout", 2_000_000, true));

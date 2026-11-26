@@ -3,7 +3,12 @@ import type { AgentName, RiskSignal, TripwireEvent } from "../types.js";
 
 export const RECALL_WINDOW_MS = 72 * 3_600_000; // PRD C2: signals older than 72 h don't count
 
-export type SignalStore = { write(s: RiskSignal): Promise<void>; recall: Recall };
+export type SignalStore = {
+  write(s: RiskSignal): Promise<void>;
+  recall: Recall;
+  /** Whether the decision on an event this agent owns may use the signal: in OFF mode, only the owner's own (PRD R4). */
+  sees(owner: AgentName, s: RiskSignal): boolean;
+};
 
 /** Same account, or a shared device, IP or payee, inside the recall window. ON mode (M2) applies the same test to Meko results. */
 export function isRelevant(s: RiskSignal, e: TripwireEvent): boolean {
@@ -28,5 +33,6 @@ export function localSignals(): SignalStore {
     async recall(agent, e) {
       return (byAgent.get(agent) ?? []).filter((s) => isRelevant(s, e));
     },
+    sees: (owner, s) => s.agent === owner,
   };
 }

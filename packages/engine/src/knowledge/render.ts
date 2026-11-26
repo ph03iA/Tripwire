@@ -13,7 +13,7 @@ export function renderRiskRules(): string {
     "",
     "Generated from `packages/engine/src/agents` by `npm run knowledge`. Don't edit by hand: a test fails when this file and the code disagree.",
     "",
-    `Each rule scores one event from 0 to 1 (the score is in brackets). An agent's findings on one event combine as noisy-OR, 1 − Π(1 − s). When they reach ${RECALL_AT}, the agent recalls the signals it can see. Each finding of ${WRITE_AT} or more is shared as a signal.`,
+    `Each rule scores one event from 0 to 1 (the score is in brackets). An agent's findings on one event combine as noisy-OR, 1 − Π(1 − s). When they reach ${RECALL_AT}, an agent with an "after recall" rule recalls the signals it can see and runs that rule against them. Each finding of ${WRITE_AT} or more is shared as a signal.`,
   ];
   return [...header, ...AGENTS.flatMap(section)].join("\n") + "\n";
 }

@@ -30,7 +30,8 @@ At most 2,000 events over 14 days from 150 accounts, plus `accounts.json`: what 
 
 ## Run the agents
 ```bash
-npm run replay -- --seed 42 --meko off   # replays the stream through the four agents → runs/<run id>.json
+npm run replay -- --seed 42 --meko off   # the four agents and the decision agent over the stream → runs/<run id>.json,
+                                         # then where each attack chain was stopped
 npm run knowledge                        # regenerates knowledge/risk-rules.md after a rule changes
 npm run upload-knowledge                 # uploads knowledge/ into the tripwire-patterns datapack; needs MEKO_API_KEY
 ```
