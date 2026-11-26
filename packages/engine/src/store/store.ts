@@ -13,6 +13,7 @@ create table events (
   device_id text, ip text, user_agent text,
   type text, amount_minor integer, payee_id text, payee_is_new boolean, merchant_id text,
   city text, country text,
+  refused boolean not null default false, -- stopped by its own decision: an attempt, not history
   body jsonb not null
 );
 create index events_account_ts on events (account_id, ts);
@@ -26,7 +27,11 @@ const INSERT = `insert into events (seq, id, ts, account_id, kind, success, chan
 
 export type LastActivity = { ts: Date; city: string; country: string };
 
-/** Read-only questions agents ask about earlier events. The store never holds an event that hasn't been replayed yet. */
+/**
+ * Read-only questions agents ask about earlier events. The store never holds an event that hasn't been replayed yet.
+ * An event its own decision stopped is still an attempt (failed logins, small charges, devices shared across accounts)
+ * but never counts as something that happened: a location, a device that got in, an amount paid, or a reset.
+ */
 export type History = {
   failedLogins(accountId: string, since: string): Promise<number>;
   lastActivity(accountId: string): Promise<LastActivity | null>;
@@ -41,6 +46,8 @@ export type History = {
 export type EventStore = History & {
   /** Call after the agents have seen the event, so queries only ever see strictly earlier events. */
   insert(e: TripwireEvent, seq: number): Promise<void>;
+  /** A BLOCK or a failed step-up stopped the event (PRD R2): it never went through. */
+  markRefused(eventId: string): Promise<void>;
   close(): Promise<void>;
 };
 
@@ -52,6 +59,7 @@ export async function openStore(): Promise<EventStore> {
 
   return {
     insert: async (e, seq) => void (await db.query(INSERT, row(e, seq))),
+    markRefused: async (eventId) => void (await db.query("update events set refused = true where id = $1", [eventId])),
     close: () => db.close(),
 
     failedLogins: async (accountId, since) => (await one<{ n: number }>(
@@ -60,16 +68,17 @@ export async function openStore(): Promise<EventStore> {
 
     // Failed attempts (failed logins, declined payments) don't place the user anywhere, so they don't count as activity.
     lastActivity: async (accountId) => (await db.query<LastActivity>(
-      `select ts, city, country from events where account_id = $1 and city is not null
+      `select ts, city, country from events where account_id = $1 and city is not null and not refused
          and not (kind = 'login' and success = false) and (body->>'status') is distinct from 'declined'
          order by seq desc limit 1`, [accountId])).rows[0] ?? null,
 
     resetSince: (accountId, since, channel) => exists(
-      `select 1 from events where account_id = $1 and kind = 'password_reset' and ts >= $2 and ($3::text is null or channel = $3)`,
+      `select 1 from events where account_id = $1 and kind = 'password_reset' and ts >= $2 and not refused and ($3::text is null or channel = $3)`,
       [accountId, since, channel ?? null]),
 
     deviceSeenOnAccount: (accountId, deviceId) => exists(
-      `select 1 from events where account_id = $1 and device_id = $2 and not (kind = 'login' and success = false)`, [accountId, deviceId]),
+      `select 1 from events where account_id = $1 and device_id = $2 and not refused and not (kind = 'login' and success = false)`,
+      [accountId, deviceId]),
 
     otherAccountsOnDevice: async (deviceId, accountId, since) => (await one<{ n: number }>(
       `select count(distinct account_id)::int as n from events where device_id = $1 and account_id <> $2 and ts >= $3`,
@@ -82,7 +91,7 @@ export async function openStore(): Promise<EventStore> {
 
     medianAmount: (accountId) => one(
       `select percentile_cont(0.5) within group (order by amount_minor) as median, count(*)::int as count
-         from events where account_id = $1 and kind = 'transaction'`, [accountId]),
+         from events where account_id = $1 and kind = 'transaction' and not refused`, [accountId]),
   };
 }
 
