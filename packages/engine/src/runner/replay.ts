@@ -10,7 +10,7 @@ import { mekoSignals, type Retrieval } from "../signals/meko.js";
 import { openStore, type EventStore } from "../store/store.js";
 import type { AccountProfile, AgentName, Label, RiskSignal, StepUpResultEvent, TripwireEvent } from "../types.js";
 import { type Denial, type Locks, locks, otpPasses } from "./outcomes.js";
-import { noTrace, openTrace, type Quote, type Trace } from "./trace.js";
+import { type KnowledgeDocuments, noTrace, openTrace, type Quote, type Trace } from "./trace.js";
 
 export type RunFinding = Finding & { agent: AgentName; eventId: string };
 
@@ -30,6 +30,7 @@ export type Decision = {
   rulesApplied: string[]; // the rules behind those signals, then the policy rule
   reasoning: string;
   quotes: Quote[]; // the playbook and policy passages, on a STEP-UP or BLOCK (C3)
+  missingQuotes?: ("playbook" | "policy")[]; // a required passage that no search returned from its document
   retrievals: Retrieval[]; // every Meko search made for the event
   conversationId?: string; // the account's case, which holds the trace turn (C4)
   outcome: Outcome;
@@ -51,16 +52,21 @@ export type RunRecord = {
   denied: Denial[]; // refused after a stop (R2): never scored or stored
   stepUps: StepUpResultEvent[]; // the runner's answer to each STEP-UP (R3)
   metrics?: Metrics; // only on a run that finished
-  audit?: { kept: number; deleted: number }; // R8, on an ON or dry run that finished
+  audit?: Audit; // R8, on every ON or dry run, failed ones included
   conversations?: { run: string; ledger: string; cases: Record<string, string> };
+  retrievals?: Retrieval[]; // every Meko search of the run, including those for events without a decision (C5)
   mekoCalls?: Record<string, number>; // attempts by tool, retries included, for the quota ledger (R7)
 };
+
+/** Whether the R8 audit passed: what it kept and deleted, or why it couldn't vouch for the datapack. */
+export type Audit = { passed: true; kept: number; deleted: number } | { passed: false; error: string };
 
 /** How an ON run reaches Meko; a dry run gets the in-process stand-in (meko/dry.ts). */
 export type MekoRun = {
   mode: "dry" | "on";
   mcp: Mcp;
   datapacks: { signals: string; patterns: string };
+  documents: KnowledgeDocuments; // the uploaded policy and playbooks, which every quote must come from
   wait?: Wait;
   now?: () => number;
   progress?: (line: string) => void;
@@ -106,19 +112,34 @@ export async function replayStream({ seed, events, labels, accounts }: Stream, m
       await replayEvent(e, world);
       record.events++;
     }
-    record.audit = await session.finish();
     record.metrics = scoreRun({ decisions: record.decisions, refused: refusedIds(record) }, events, labels);
   } catch (err) {
     fail(record, err);
   } finally {
+    await auditInto(record, session);
     await store?.close().catch((err: unknown) => fail(record, err));
-    if (meko) Object.assign(record, { conversations: session?.trace.conversations(), mekoCalls: Object.fromEntries(meko.mcp.calls) });
+    if (meko) Object.assign(record, { conversations: session?.trace.conversations(), retrievals: session?.trace.retrievals(),
+      mekoCalls: Object.fromEntries(meko.mcp.calls) });
     record.finishedAt = new Date().toISOString();
   }
   return record;
 }
 
-type Session = { trace: Trace; signals: SignalStore; finish(): Promise<RunRecord["audit"]> };
+type Session = { trace: Trace; signals: SignalStore; finish(): Promise<{ kept: number; deleted: number } | undefined> };
+
+/**
+ * R8: the audit runs after a failed run too, so nothing Meko mined from its turns stays behind. A failed run keeps its
+ * first error, and the record says whether the cleanup worked.
+ */
+async function auditInto(record: RunRecord, session: Session | undefined) {
+  try {
+    const audit = await session?.finish();
+    if (audit) record.audit = { passed: true, ...audit };
+  } catch (err) {
+    record.audit = { passed: false, error: err instanceof Error ? err.message : String(err) };
+    fail(record, err);
+  }
+}
 
 /** OFF mode keeps signals in process and traces nothing; ON and dry runs go through Meko, then end with the R8 audit. */
 async function sessionFor(meko: MekoRun | undefined, runId: string): Promise<Session> {
@@ -170,13 +191,13 @@ async function review(e: TripwireEvent, onEvent: RiskSignal[], w: World) {
   if (!owner || !trigger) return w.trace.ledger(e.ts, ledgerLine(e, "ALLOW unreviewed", onEvent, w.trace.retrievalsFor(e.id)));
   const t0 = performance.now();
   const verdict = decide(e, [...(await w.signals.forDecision(owner, e)), ...visible], w.ctx.profile(e.accountId));
-  const quotes = verdict.action === "ALLOW" ? [] : await w.trace.quotes(e, verdict);
+  const { quotes, missing } = verdict.action === "ALLOW" ? { quotes: [], missing: [] } : await w.trace.quotes(e, verdict);
   const latencyMs = Math.round(performance.now() - t0);
   const outcome = await settle(e, verdict.action, w);
   const decision: Decision = { eventId: e.id, accountId: e.accountId, ts: e.ts, trigger, action: verdict.action, risk: verdict.risk,
     capped: verdict.capped, signalsUsed: verdict.used.map((s) => `${s.eventId}/${s.ruleId}`), rulesApplied: rulesOf(verdict),
-    reasoning: verdict.reasoning, quotes, retrievals: w.trace.retrievalsFor(e.id), conversationId: w.trace.caseOf(e.accountId), outcome,
-    latencyMs };
+    reasoning: verdict.reasoning, quotes, ...(missing.length ? { missingQuotes: missing } : {}), retrievals: w.trace.retrievalsFor(e.id),
+    conversationId: w.trace.caseOf(e.accountId), outcome, latencyMs };
   w.record.decisions.push(decision);
   if (decision.action === "ALLOW") {
     return w.trace.ledger(e.ts, ledgerLine(e, `ALLOW reviewed (${trigger}), risk ${verdict.risk.toFixed(2)}`, verdict.used, decision.retrievals));
@@ -184,11 +205,20 @@ async function review(e: TripwireEvent, onEvent: RiskSignal[], w: World) {
   await w.trace.flagged({ eventId: e.id, action: decision.action, outcome, reasoning: decision.reasoning, record: decision }, e.accountId);
 }
 
-/** One allow-ledger line (PRD C5): UTC time, event, account and kind, what happened, then the signals and searches behind it. */
+/**
+ * One allow-ledger line (PRD C5): UTC time, event, account and kind, what happened, then the signals and each search
+ * behind it, with what it returned and which memories it used. The run record holds every search in full.
+ */
 function ledgerLine(e: TripwireEvent, what: string, signals: RiskSignal[] = [], searches: Retrieval[] = []): string {
   const behind = signals.length ? ` | signals ${signals.map((s) => `${s.ruleId} ${s.score}`).join(", ")}` : "";
-  const looked = searches.length ? ` | searches ${searches.length}` : "";
+  const looked = searches.map((r) => ` | ${searchLine(r)}`).join("");
   return `${e.ts.slice(11, 16)} ${e.id} ${e.accountId} ${e.kind} ${what}${behind}${looked}`;
+}
+
+function searchLine(r: Retrieval): string {
+  const used = r.usedIds.length ? ` (${r.usedIds.join(" ")})` : "";
+  const late = r.timedOut?.length ? `, ${r.timedOut.length} fresh signal(s) still missing` : "";
+  return `${r.tool} returned ${r.returnedIds.length}, used ${r.usedIds.length}${used}${late}`;
 }
 
 const rulesOf = (v: Verdict) =>
@@ -197,13 +227,19 @@ const rulesOf = (v: Verdict) =>
 /** A BLOCK stops. A STEP-UP sends a code to the registered phone; the runner answers for whoever holds it (R3). */
 async function settle(e: TripwireEvent, action: Action, w: World): Promise<Outcome> {
   if (action === "ALLOW") return "allowed";
-  if (action === "BLOCK") return w.locks.stop(e), "blocked";
+  if (action === "BLOCK") return stop(e, w, "blocked");
   const result: StepUpResultEvent = { id: `${e.id}-otp`, ts: e.ts, accountId: e.accountId, kind: "step_up_result", passed: otpPasses(w.label(e.id)) };
   await w.store.insert(result, w.seq++);
   w.record.stepUps.push(result);
   if (result.passed) return w.locks.verify(e), "passed";
+  return stop(e, w, "failed");
+}
+
+/** A stopped event never went through: its device is locked out (R2), and history no longer counts it as done. */
+async function stop(e: TripwireEvent, w: World, outcome: "blocked" | "failed"): Promise<Outcome> {
   w.locks.stop(e);
-  return "failed";
+  await w.store.markRefused(e.id);
+  return outcome;
 }
 
 /** Events that never went through: refused after a stop, blocked, or stopped at their step-up. */

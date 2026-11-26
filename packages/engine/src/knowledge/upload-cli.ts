@@ -7,5 +7,8 @@ import { knowledgeFiles, PATTERNS_DATAPACK, uploadFile } from "./upload.js";
 
 const rest = restClient(mekoConfig());
 const datapackId = await findDatapack(rest, PATTERNS_DATAPACK);
-for (const file of knowledgeFiles()) console.log(`${(await uploadFile(rest, datapackId, file)).padEnd(9)} ${basename(file)}`);
+for (const file of knowledgeFiles()) {
+  const { outcome, olderDeleted } = await uploadFile(rest, datapackId, file);
+  console.log(`${outcome.padEnd(9)} ${basename(file)}${olderDeleted ? `, ${olderDeleted} older copy or copies deleted` : ""}`);
+}
 console.log(`REST calls: ${JSON.stringify(Object.fromEntries(rest.calls))}`);

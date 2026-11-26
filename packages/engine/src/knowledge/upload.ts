@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { USER_AGENT } from "../config.js";
@@ -9,6 +9,7 @@ import { MekoError, type Wait } from "../meko/retry.js";
 
 export const KNOWLEDGE_DIR = fileURLToPath(new URL("../../../../knowledge/", import.meta.url));
 export const PATTERNS_DATAPACK = "tripwire-patterns";
+export const POLICY_FILE = "step-up-policy.md";
 const POLL_MS = 2000;
 const POLLS = 60; // 2 minutes
 const STOPPED = new Set(["failed", "abandoned", "oversized"]);
@@ -19,43 +20,68 @@ export function knowledgeFiles(dir = KNOWLEDGE_DIR): string[] {
   return [dir, join(dir, "playbooks")].flatMap((d) => readdirSync(d).filter((f) => f.endsWith(".md")).sort().map((f) => join(d, f)));
 }
 
+/** The fraud playbooks: the only documents a decision may quote as its playbook passage (PRD C3). */
+export const playbookFiles = (dir = KNOWLEDGE_DIR) => knowledgeFiles(dir).filter((f) => basename(dirname(f)) === "playbooks");
+
+/**
+ * The uploaded policy's and playbooks' document IDs, so an ON run can check that each quote comes from the right
+ * document. A missing one stops the run before it starts: quotes need every document uploaded.
+ */
+export async function knowledgeDocuments(rest: Rest, datapackId: string): Promise<{ policy: string; playbooks: string[] }> {
+  const ids = new Map<string, string>(); // file name → document ID; the live API names a document by its storage key
+  for (let page = 1; ; page++) {
+    const list = await rest.request<{ items?: unknown; has_more?: unknown }>("GET",
+      `datapacks/${datapackId}/knowledge-bases/documents?page=${page}&page_size=200`, "read");
+    if (!Array.isArray(list?.items)) throw new Error("GET /documents: unexpected answer");
+    for (const d of list.items as Doc[]) if (typeof d?.document_name === "string" && typeof d.id === "string") ids.set(d.document_name.split("/").pop()!, d.id);
+    if (list.has_more !== true) break;
+  }
+  const idOf = (file: string) => {
+    const id = ids.get(file);
+    if (!id) throw new Error(`${file} isn't in the ${PATTERNS_DATAPACK} knowledge base: run npm run upload-knowledge first`);
+    return id;
+  };
+  return { policy: idOf(POLICY_FILE), playbooks: playbookFiles().map((f) => idOf(basename(f))) };
+}
+
 type Ticket = { url: string; key: string; already_uploaded: boolean; fields?: Record<string, string> };
 type Doc = { id: string; document_name: string };
 type Deps = { storage?: typeof fetch; wait?: Wait };
+export type Uploaded = { outcome: "unchanged" | "uploaded"; olderDeleted: number };
 
 /**
  * Uploads one file to a datapack's knowledge base, unless those exact bytes are already there (Meko keys files by
- * SHA-256). Changed bytes replace the older document of the same name, so a search never quotes a stale version.
- * Either way, it returns once the file is indexed.
+ * SHA-256), and waits until it's indexed. Only then are the file's older copies deleted, so a failed upload leaves the
+ * last good version searchable, and a re-run finishes a cleanup that an earlier run didn't get to.
  */
-export async function uploadFile(rest: Rest, datapackId: string, path: string, { storage = fetch, wait = sleep }: Deps = {}) {
+export async function uploadFile(rest: Rest, datapackId: string, path: string, { storage = fetch, wait = sleep }: Deps = {}): Promise<Uploaded> {
   const bytes = readFileSync(path);
   const filename = basename(path);
   const kb = `datapacks/${datapackId}/knowledge-bases`;
   const ticket = await rest.request<unknown>("POST", `${kb}/upload-url`, "idempotent",
     { filename, size: bytes.length, content_hash: createHash("sha256").update(bytes).digest("hex"), client: USER_AGENT });
   if (!isTicket(ticket)) throw new Error(`${filename}: unexpected answer to the upload-url request`);
-  if (!ticket.already_uploaded) {
-    for (const doc of await documentsNamed(rest, kb, filename)) await deleteDocument(rest, `${kb}/documents/${doc.id}`);
-    await sendToStorage(ticket, bytes, filename, storage);
-  }
+  if (!ticket.already_uploaded) await sendToStorage(ticket, bytes, filename, storage);
   await untilIndexed(rest, `${kb}/document-status?document_key=${encodeURIComponent(ticket.key)}`, filename, wait);
-  return ticket.already_uploaded ? "unchanged" : "uploaded";
+  const older = await olderCopies(rest, kb, filename, ticket.key);
+  for (const doc of older) await deleteDocument(rest, `${kb}/documents/${doc.id}`);
+  return { outcome: ticket.already_uploaded ? "unchanged" : "uploaded", olderDeleted: older.length };
 }
 
 /**
- * Every document stored under this file name. Meko's docs show `document_name` as the bare name, but the live API
- * answers with the whole storage key, `<owner>/<datapack>/<sha256>/<name>` (2026-11-26), so both forms match.
+ * The file's other copies. The live API names a document by its storage key, `<owner>/<datapack>/<sha256>/<name>`
+ * (2026-11-26), and the ticket's key is the current copy's, so any other key ending in `/<name>` is an older version.
  * `q` matches any part of a name, so `policy.md.bak` comes back for `policy.md` and is left out here.
  */
-async function documentsNamed(rest: Rest, kb: string, filename: string): Promise<Doc[]> {
+// shortcut: a document named only `<name>`, as Meko's docs show, can't be told from the current copy, so it's left alone.
+async function olderCopies(rest: Rest, kb: string, filename: string, currentKey: string): Promise<Doc[]> {
   const docs: Doc[] = [];
-  const isThisFile = (name: unknown) => name === filename || (typeof name === "string" && name.endsWith(`/${filename}`));
+  const isOlder = (name: unknown) => typeof name === "string" && name.endsWith(`/${filename}`) && name !== currentKey;
   for (let page = 1; ; page++) {
     const list = await rest.request<{ items?: unknown; has_more?: unknown }>("GET",
       `${kb}/documents?q=${encodeURIComponent(filename)}&page=${page}&page_size=200`, "read");
     if (!Array.isArray(list?.items)) throw new Error("GET /documents: unexpected answer");
-    docs.push(...(list.items as Doc[]).filter((d) => isThisFile(d?.document_name) && typeof d.id === "string"));
+    docs.push(...(list.items as Doc[]).filter((d) => isOlder(d?.document_name) && typeof d.id === "string"));
     if (list.has_more !== true) return docs;
   }
 }

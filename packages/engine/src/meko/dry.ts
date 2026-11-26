@@ -1,3 +1,5 @@
+import { basename } from "node:path";
+import { knowledgeFiles, playbookFiles, POLICY_FILE } from "../knowledge/upload.js";
 import type { Mcp } from "./mcp.js";
 import { MekoError } from "./retry.js";
 
@@ -10,6 +12,10 @@ type Args = Record<string, unknown>;
 const ID_WORD = /\b(?:[a-z]{3}_[0-9a-z]+|\d{1,3}(?:\.\d{1,3}){3})\b/g;
 
 export type DryMeko = Mcp & { memories: Map<string, Memory>; conversations: Map<string, Conversation> };
+
+/** The stand-in's knowledge base holds every knowledge doc, under these IDs. */
+const dryId = (file: string) => `dry:${basename(file)}`;
+export const dryDocuments = () => ({ policy: dryId(POLICY_FILE), playbooks: playbookFiles().map(dryId) });
 
 /**
  * An in-process stand-in for Meko's MCP tools, with the answer shapes the live API gave in the week-1 checks.
@@ -39,12 +45,12 @@ export function dryMeko(): DryMeko {
     conversation_add_message(a) {
       const c = conversation(a);
       const repeat = c.messages.find((m) => a.seed !== undefined && m.seed === a.seed);
-      if (repeat) return { id: repeat.id };
+      if (repeat) return { status: "accepted", message_id: repeat.id, conversation_id: c.id };
       const message = { id: next("msg"), seed: a.seed as string | undefined, input: String(a.input), output: String(a.output) };
       c.messages.push(message);
       const id = next("mem");
       memories.set(id, { id, data: `User asked: ${message.input}`, agent_id: c.agent_id, conversation_id: c.id }); // K6
-      return { id: message.id };
+      return { status: "accepted", message_id: message.id, conversation_id: c.id }; // Meko's receipt (K10)
     },
     memory_add(a) {
       const id = next("mem");
@@ -61,8 +67,12 @@ export function dryMeko(): DryMeko {
         .sort((x, y) => y.score - x.score);
       return { results: hits.slice(0, Number(a.limit ?? 10)).map(({ m, score }) => ({ id: m.id, memory: m.data, metadata: m.metadata, score })) };
     },
-    knowledgebase_search: (a) => ({ results: [{ id: next("chunk"), chunk_text: `(dry run: no knowledge base) a passage for "${String(a.query)}"`,
-      document_id: "dry-run-document", metadata_filters: { source: "dry-run" } }], count: 1 }),
+    knowledgebase_search(a) {
+      // One passage from every knowledge doc, in file order: the trace has to pick the right document itself.
+      const results = knowledgeFiles().slice(0, Number(a.limit ?? 10)).map((f) => ({ id: next("chunk"), document_id: dryId(f),
+        chunk_text: `(dry run) a passage of ${basename(f)} for "${String(a.query)}"`, metadata_filters: { source: "upload" } }));
+      return { results, count: results.length };
+    },
     memory_delete_all(a) {
       const doomed = [...memories.values()].filter((m) => m.agent_id === a.agent_id && (a.run_id === undefined || m.run_id === a.run_id));
       for (const m of doomed) memories.delete(m.id);

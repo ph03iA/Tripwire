@@ -164,7 +164,7 @@ Priority: **M** = Must, **S** = Should, **C** = Could.
 | ID | Requirement | Pri |
 | --- | --- | --- |
 | R1 | Replays events in time order. `--mode fast` for metrics, `--mode paced --speed N` for the demo. | M |
-| R2 | Stops are final for the attacker. After a BLOCK or a failed STEP-UP on an account, later events from the device that triggered it are denied for the rest of the run. So are payments and credential changes from any device not in the account's profile or verified history, which means devices that passed a step-up on the account. Each denied event is logged with the rule that denied it. A denied event is never scored or stored: the app turns it away at the door. | M |
+| R2 | Stops are final for the attacker. After a BLOCK or a failed STEP-UP on an account, later events from the device that triggered it are denied for the rest of the run. So are payments and credential changes from any device not in the account's profile or verified history, which means devices that passed a step-up on the account. Each denied event is logged with the rule that denied it. A denied event is never scored or stored: the app turns it away at the door. An event stopped by its own decision stays on record as an attempt, but never counts as account history: not as a location, a device that got in, an amount paid, or a reset. | M |
 | R3 | The runner is the world simulator. It decides OTP outcomes from the labels (the real owner passes; an attacker fails unless the scenario gave them the phone) and writes a `step_up_result` event. Agents never read labels, scenario IDs or steps. | M |
 | R4 | `--meko on\|off`. OFF means no Meko at all: each decision sees only the owning agent's own signals, with no knowledge base and no learnings. Rules and thresholds stay the same. | M |
 | R5 | Run isolation. Each ON run starts with an empty `signals` datapack. Each evaluation run also starts with zero learned patterns. Promoted patterns can't be deleted through the API (K7), so each evaluation run gets a fresh `patterns` datapack. A probe search before the run must return no learned pattern. | M |
@@ -230,7 +230,7 @@ The judges weight Meko use at 30% and ask for every part of it. Each row below i
 - **Prevented:** the chain's takeover event was denied, so the money never left. This is computed from what the runner actually executed.
 - **Caught early:** prevented by a stop at least one phase before the takeover event.
 - **Steps early:** takeover phase minus the phase where the chain was stopped. 0 means the payment itself was denied. Steps count phases, not events: a run of failed logins is one phase.
-- **False positive:** a BLOCK on a legit event. **Friction:** a STEP-UP on a legit event.
+- **False positive:** a BLOCK on a legit event. **Friction:** a STEP-UP on a legit event. Both rates are taken over legit sensitive events, with BLOCKs and STEP-UPs on those same events as the numerator; totals over all legit events are reported beside them.
 - **Loss prevented:** the ₹ amount of takeover steps that never executed.
 
 **Method**

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { dryMeko } from "../meko/dry.js";
+import { dryDocuments, dryMeko } from "../meko/dry.js";
 import type { Mcp } from "../meko/mcp.js";
 import { MekoError } from "../meko/retry.js";
 import { openTrace } from "./trace.js";
 
-const options = (mcp: Mcp) => ({ mcp, runId: "42-on-test", datapacks: { signals: "s", patterns: "p" }, wait: async () => {} });
+const options = (mcp: Mcp) => ({ mcp, runId: "42-on-test", datapacks: { signals: "s", patterns: "p" }, documents: dryDocuments(), wait: async () => {} });
 const gatewayDown = () => new MekoError("bad gateway", 502); // transient: the call may or may not have been applied
 
 /** The stand-in, except that `tool` loses its answer `times` times: once after doing the work (`applied`), or without doing it. */
@@ -37,7 +37,7 @@ test("a trace turn whose answer was lost is looked up after a wait; a missing on
 
   const lost = losesAnswers("conversation_add_message", false);
   const again = await openTrace(options(lost.mcp));
-  await assert.rejects(again.flagged(turn, "acc_1"), /may be missing/);
+  await assert.rejects(again.flagged(turn, "acc_1"), /has no receipt and isn't in its conversation/);
 });
 
 test("the R8 audit deletes every memory the run didn't write, and fails if one can't be deleted", async () => {
@@ -72,4 +72,48 @@ test("the ledger is sent one day at a time, split into parts that fit one turn",
   assert.ok(outputs.every((o) => o.split("\n").slice(1).join("\n").length <= 12_000));
   assert.match(outputs[0]!, /^Allow ledger for 2026-11-03, part 1 of 3/);
   assert.ok(!outputs.join("").includes("next day"), "a day is sent when the next one starts");
+});
+
+/** The stand-in, except that `tool` answers with text cut off mid-receipt: after doing the work (`applied`), or without doing it. */
+function cutsAnswers(tool: string, applied: boolean) {
+  const dry = dryMeko();
+  const mcp: Mcp = { ...dry, call: async (name, args, op) => {
+    if (name !== tool) return dry.call(name, args, op);
+    if (applied) await dry.call(name, args, op);
+    return '{"status":"acc'; // what the client returns for an unreadable answer to a call that isn't write-once
+  } };
+  return { dry, mcp };
+}
+
+test("a trace turn or conversation without a readable receipt is looked up, and the run stops if it isn't there (review finding 3)", async () => {
+  // Regression: a cut-off answer to conversation_add_message let a BLOCK finish with no turn in its case.
+  const turn = { eventId: "evt_9", action: "BLOCK" as const, outcome: "blocked", reasoning: "why", record: {} };
+  const lost = cutsAnswers("conversation_add_message", false);
+  await assert.rejects((await openTrace(options(lost.mcp))).flagged(turn, "acc_9"), /has no receipt and isn't in its conversation/);
+  const kept = cutsAnswers("conversation_add_message", true);
+  const trace = await openTrace(options(kept.mcp));
+  await trace.flagged(turn, "acc_9");
+  assert.equal(kept.dry.conversations.get(trace.caseOf("acc_9")!)!.messages.length, 1, "found, so the run goes on");
+  await assert.rejects(openTrace(options(cutsAnswers("conversation_create", false).mcp)), /not_found/);
+  assert.ok((await openTrace(options(cutsAnswers("conversation_create", true).mcp))).run);
+});
+
+test("quotes come only from the policy and the playbooks, and a missing one is reported (review finding 6)", async () => {
+  // Regression: a risk-rules.md passage was accepted as both the playbook and the policy, and an empty search passed silently.
+  const docs = dryDocuments();
+  const kb = (results: unknown[]) => {
+    const dry = dryMeko();
+    return { ...dry, call: (tool: string, args: Record<string, unknown>, op: "read" | "idempotent" | "write-once") =>
+      (tool === "knowledgebase_search" ? Promise.resolve({ results, count: results.length }) : dry.call(tool, args, op)) } as Mcp;
+  };
+  const hit = (document_id: string, source = "upload") => ({ id: `c-${document_id}`, chunk_text: document_id, document_id, metadata_filters: { source } });
+  const e = { id: "evt_6", ts: "2026-11-03T10:00:00.000Z", accountId: "acc_6", kind: "login", success: true, method: "password" } as never;
+  const v = { action: "BLOCK", risk: 0.9, used: [{ type: "new_device" }], capped: false, reasoning: "" } as never;
+  const quoted = async (results: unknown[]) => (await openTrace(options(kb(results)))).quotes(e, v);
+  assert.deepEqual(await quoted([hit("dry:risk-rules.md")]), { quotes: [], missing: ["playbook", "policy"] });
+  assert.deepEqual(await quoted([]), { quotes: [], missing: ["playbook", "policy"] });
+  const pattern = hit(docs.playbooks[1]!, "memory"); // a learned pattern isn't a passage, even from a playbook's ID
+  const right = await quoted([hit("dry:risk-rules.md"), pattern, hit(docs.policy), hit(docs.playbooks[2]!)]);
+  assert.deepEqual(right.quotes.map((q) => q.documentId), [docs.playbooks[2], docs.policy]);
+  assert.deepEqual(right.missing, []);
 });

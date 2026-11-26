@@ -48,11 +48,18 @@ export function overQuota(used: Usage, needed: Usage, limits = FREE): string[] {
     used[k] + needed[k] > limits[k] ? [`${k}: ${used[k]} used this month + ${needed[k]} needed > ${limits[k]}`] : []);
 }
 
-/** Whether one run stays inside PRD §9's ceiling, in words. */
-export const ceilingCheck = (u: Usage) =>
-  u.conversationMessages <= CEILING.conversationMessages && u.memorySearches + u.kbSearches <= CEILING.searches
-    ? `within the per-run ceiling (${CEILING.conversationMessages} conversation messages, ${CEILING.searches} searches)`
-    : `over the per-run ceiling (${CEILING.conversationMessages} conversation messages, ${CEILING.searches} searches)`;
+/** Why one run that needs `u` breaks PRD §9's per-run ceiling, one sentence per limit; empty when it fits. */
+export function overCeiling(u: Usage): string[] {
+  const searches = u.memorySearches + u.kbSearches;
+  return [
+    ...(u.conversationMessages > CEILING.conversationMessages
+      ? [`conversation messages: ${u.conversationMessages} needed > ${CEILING.conversationMessages} per run`] : []),
+    ...(searches > CEILING.searches ? [`searches: ${searches} needed > ${CEILING.searches} per run`] : []),
+  ];
+}
+
+/** Everything that stops a live ON run before it connects: PRD §9's per-run ceiling, then this month's quota (R7). */
+export const preflight = (needed: Usage, used: Usage) => [...overCeiling(needed), ...overQuota(used, needed)];
 
 export const withHeadroom = (u: Usage): Usage => ({
   conversationMessages: Math.ceil(u.conversationMessages * HEADROOM),

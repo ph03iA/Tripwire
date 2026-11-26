@@ -2,20 +2,21 @@
 //   off  no Meko calls at all (PRD R4)
 //   dry  the whole ON pipeline against an in-process stand-in for Meko: counts the calls a live run would make
 //   on   the real Meko account. It runs the dry pass first and refuses to start when that estimate, with headroom,
-//        doesn't fit what's left of this month's quota (R7). Spends real quota.
+//        breaks the per-run ceiling (PRD §9) or doesn't fit what's left of this month's quota (R7). Spends real quota.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { mekoConfig } from "../config.js";
 import { generate } from "../generator/generate.js";
-import { PATTERNS_DATAPACK } from "../knowledge/upload.js";
-import { dryMeko } from "../meko/dry.js";
+import { knowledgeDocuments, PATTERNS_DATAPACK } from "../knowledge/upload.js";
+import { dryDocuments, dryMeko } from "../meko/dry.js";
 import { connectMcp } from "../meko/mcp.js";
 import { findDatapack, restClient } from "../meko/rest.js";
 import { formatMetrics } from "../metrics.js";
 import { SIGNALS_DATAPACK } from "../signals/meko.js";
-import { ceilingCheck, logUsage, overQuota, usageOf, usedThisMonth, withHeadroom } from "./quota.js";
+import { lockDatapack } from "./lock.js";
+import { logUsage, overCeiling, overQuota, preflight, usageOf, usedThisMonth, withHeadroom } from "./quota.js";
 import { type MekoRun, replayStream, type RunRecord, type Stream } from "./replay.js";
 
 const { values } = parseArgs({
@@ -37,17 +38,17 @@ if (record.status === "failed") {
 }
 
 function dryMode(): MekoRun {
-  return { mode: "dry", mcp: dryMeko(), datapacks: { signals: "dry-signals", patterns: "dry-patterns" }, wait: async () => {} };
+  return { mode: "dry", mcp: dryMeko(), datapacks: { signals: "dry-signals", patterns: "dry-patterns" }, documents: dryDocuments(), wait: async () => {} };
 }
 
 async function dryRun(stream: Stream): Promise<RunRecord> {
   const dry = await replayStream(stream, dryMode());
   const needs = usageOf(dry.mekoCalls ?? {});
   const used = usedThisMonth();
-  const over = overQuota(used, withHeadroom(needs));
-  console.log(`dry run: a live run would make ${JSON.stringify(needs)}, ${ceilingCheck(needs)}`);
+  const over = [...overCeiling(needs), ...overQuota(used, withHeadroom(needs))];
+  console.log(`dry run: a live run would make ${JSON.stringify(needs)}`);
   console.log(`  calls by tool ${JSON.stringify(dry.mekoCalls)}`);
-  console.log(over.length ? `  it wouldn't fit this month's quota: ${over.join("; ")}` : `  it fits this month's quota, with headroom (used so far ${JSON.stringify(used)})`);
+  console.log(over.length ? `  a live run would be refused: ${over.join("; ")}` : `  it fits the per-run ceiling and this month's quota, with headroom (used so far ${JSON.stringify(used)})`);
   return dry;
 }
 
@@ -55,25 +56,34 @@ async function liveRun(stream: Stream): Promise<RunRecord> {
   const estimate = await replayStream(stream, dryMode());
   if (estimate.status !== "ok") throw new Error(`the dry pass failed, so the live run didn't start: ${estimate.error}`);
   const needed = withHeadroom(usageOf(estimate.mekoCalls ?? {}));
-  const over = overQuota(usedThisMonth(), needed);
-  if (over.length) {
-    console.error(`refused (R7): this run could go over the Meko quota. ${over.join("; ")}. Wait for the reset or upgrade the plan.`);
+  const refused = preflight(needed, usedThisMonth());
+  if (refused.length) {
+    console.error(`refused before connecting (R7, PRD §9): ${refused.join("; ")}.`);
     process.exit(2);
   }
   const cfg = mekoConfig();
   const rest = restClient(cfg);
   const datapacks = { signals: await findDatapack(rest, SIGNALS_DATAPACK), patterns: await findDatapack(rest, PATTERNS_DATAPACK) };
-  const mcp = await connectMcp(cfg);
+  const documents = await knowledgeDocuments(rest, datapacks.patterns);
+  const release = lockDatapack(datapacks.signals, `seed ${stream.seed}`);
+  try {
+    return await onMeko(stream, { mode: "on", mcp: await connectMcp(cfg), datapacks, documents, progress: (line) => console.log(`  ${line}`) }, needed);
+  } finally {
+    release();
+  }
+}
+
+async function onMeko(stream: Stream, run: MekoRun, needed: ReturnType<typeof usageOf>): Promise<RunRecord> {
   console.log(`live ON run, estimated with headroom at ${JSON.stringify(needed)}. One line per simulated day:`);
   const ranAt = new Date().toISOString();
   let runId = "unknown";
   try {
-    const live = await replayStream(stream, { mode: "on", mcp, datapacks, progress: (line) => console.log(`  ${line}`) });
+    const live = await replayStream(stream, run);
     runId = live.runId;
     return live;
   } finally {
-    logUsage({ ranAt, runId, mcp: Object.fromEntries(mcp.calls) }); // even for a failed run: Meko counted what was sent
-    await mcp.close();
+    logUsage({ ranAt, runId, mcp: Object.fromEntries(run.mcp.calls) }); // even for a failed run: Meko counted what was sent
+    await run.mcp.close();
   }
 }
 
@@ -94,7 +104,15 @@ function report(r: RunRecord, file: string) {
   const actions = r.decisions.map((d) => d.action);
   console.log(`${r.decisions.length} decisions (${["BLOCK", "STEP_UP", "ALLOW"].map((a) => `${a} ${actions.filter((x) => x === a).length}`).join(", ")}), `
     + `refused after a stop: ${r.denied.length}`);
-  if (r.audit) console.log(`hygiene audit passed: kept ${r.audit.kept} signals, deleted ${r.audit.deleted} other memories`);
-  if (r.mekoCalls) console.log(`Meko calls ${JSON.stringify(r.mekoCalls)}; case conversations ${Object.keys(r.conversations?.cases ?? {}).length}`);
+  reportMeko(r);
   if (r.metrics) console.log(formatMetrics(r.metrics));
+}
+
+/** The ON-only lines: the R8 audit, quotes that couldn't be found, and the Meko calls. */
+function reportMeko(r: RunRecord) {
+  if (r.audit) console.log(r.audit.passed ? `hygiene audit passed: kept ${r.audit.kept} signals, deleted ${r.audit.deleted} other memories`
+    : `hygiene audit FAILED: ${r.audit.error}`);
+  const unquoted = r.decisions.filter((d) => d.missingQuotes?.length).length;
+  if (unquoted) console.log(`${unquoted} STEP-UPs or BLOCKs are missing a required playbook or policy passage (see missingQuotes)`);
+  if (r.mekoCalls) console.log(`Meko calls ${JSON.stringify(r.mekoCalls)}; case conversations ${Object.keys(r.conversations?.cases ?? {}).length}`);
 }
