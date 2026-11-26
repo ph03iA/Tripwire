@@ -50,6 +50,10 @@ test("the R8 audit deletes every memory the run didn't write, and fails if one c
   assert.deepEqual(audit, { kept: 1, deleted: 2 });
   assert.deepEqual([...dry.memories.keys()], [mine.results[0]!.id]);
 
+  const blind = await openTrace(options(dryMeko()));
+  await assert.rejects(blind.finish(new Set(["mem-that-the-listing-never-shows"])), /listing is missing 1 of this run's 1 signals/,
+    "an audit that can't see the run's own signals proves nothing");
+
   const stuck = dryMeko();
   const noDeletes: Mcp = { ...stuck, call: (tool, args, op) => (tool === "memory_delete_by_id" ? Promise.resolve({}) : stuck.call(tool, args, op)) };
   const stuckTrace = await openTrace(options(noDeletes));

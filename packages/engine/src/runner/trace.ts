@@ -205,8 +205,13 @@ export async function openTrace(o: TraceOptions): Promise<Trace> {
         await mcp.call("memory_delete_by_id", { ...inSignals, conversation_id: run, agent_id: m.agent_id, memory_id: m.id }, "idempotent");
         deleted++;
       }
-      const left = (await everyMemory()).filter((row) => !trusted.has(row.id)).length;
+      const listed = await everyMemory();
+      const left = listed.filter((row) => !trusted.has(row.id)).length;
       if (left) throw new Error(`hygiene audit (R8): ${left} memories that aren't this run's signals are still in ${SIGNALS_DATAPACK}`);
+      // A listing that misses the run's own signals can't vouch for what else is there.
+      const seen = new Set(listed.map((row) => row.id));
+      const unseen = [...trusted].filter((id) => !seen.has(id)).length;
+      if (unseen) throw new Error(`hygiene audit (R8): the listing is missing ${unseen} of this run's ${trusted.size} signals, so it can't vouch for ${SIGNALS_DATAPACK}`);
       return { kept: trusted.size, deleted };
     },
     conversations: () => ({ run, ledger, cases: Object.fromEntries(resolved) }),
