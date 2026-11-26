@@ -22,7 +22,9 @@ function fakeMeko(alreadyUploaded: boolean, finalState = "completed") {
       return ok(alreadyUploaded ? { url: "", key: "u/dp1/h/policy.md", already_uploaded: true }
         : { url: "https://bucket.example/", key: "u/dp1/h/policy.md", already_uploaded: false, fields: { key: "u/dp1/h/policy.md", policy: "p", "x-amz-signature": "s" } });
     }
-    if (call === "GET /documents") return ok({ items: [{ id: "doc_old", document_name: "policy.md" }, { id: "doc_bak", document_name: "policy.md.bak" }], has_more: false });
+    // The live API names a document by its whole storage key; Meko's docs show the bare file name. Both must match.
+    if (call === "GET /documents") return ok({ items: [{ id: "doc_old", document_name: "u/dp1/0ld/policy.md" }, { id: "doc_older", document_name: "policy.md" },
+      { id: "doc_bak", document_name: "u/dp1/0ld/policy.md.bak" }], has_more: false });
     if (call.startsWith("DELETE /documents/")) return ok({ document_id: call.split("/").pop() });
     if (call === "GET /document-status") return ok({ state: calls.filter((c) => c === call).length < 2 ? "indexing" : finalState });
     if (call === "GET /api/v1/datapacks") return ok({ items: [{ datapack_id: "dp1", datapack_name: url.searchParams.get("name") }] });
@@ -52,7 +54,8 @@ test("upload: the same bytes are left alone; it still waits until they're indexe
 test("upload: new bytes replace the older document of the same name, and storage never gets the key", async () => {
   const meko = fakeMeko(false);
   assert.equal(await uploadFile(meko.rest, "dp1", file, { storage: meko.storage, wait: noWait }), "uploaded");
-  assert.deepEqual(meko.calls, ["POST /upload-url", "GET /documents", "DELETE /documents/doc_old", "GET /document-status", "GET /document-status"]);
+  assert.deepEqual(meko.calls, ["POST /upload-url", "GET /documents", "DELETE /documents/doc_old", "DELETE /documents/doc_older", "GET /document-status",
+    "GET /document-status"]);
   assert.deepEqual(meko.stored, [{ auth: null, fields: ["key", "policy", "x-amz-signature", "file"], size: Buffer.byteLength(text) }],
     "the fields, then the exact bytes");
 });

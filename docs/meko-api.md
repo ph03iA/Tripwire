@@ -67,4 +67,5 @@ Found by the [week-1 checks](spikes.md) on 2026-11-23, beyond what the docs say:
 - **Traces include Meko's own LLM work.** Each `conversation_add_message` trace shows the memory extraction's OpenAI spans and an estimated cost. Tripwire makes none of those calls.
 - **Conversation turns are mined for memories.** Within about 30 s, Meko saves one memory from a turn's user input, under the conversation's agent ID and tagged with the conversation. Nothing came from `output` or `reasoning` (K6).
 - **Conversation writes dedupe.** The same `seed` returns the same message ID and stores one message, and the same `session_id` returns the same conversation (K10). A 13 KB turn is stored whole. Each call can still be mined for a memory of its own, so a retry can leave an extra one (K6, K10).
+- **A knowledge-base file's `document_name` is its whole storage key**, `<owner id>/<datapack id>/<sha256>/<file name>`, not the bare file name the docs show (2026-11-26). The upload script matches both.
 - **Some answers carry the account owner's name and email** (`memory_get_all` rows, `GET /datapacks`), so raw answers are never logged.
