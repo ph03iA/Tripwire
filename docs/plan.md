@@ -33,23 +33,24 @@ Requirement IDs (D1, A1, C1, …) refer to the [PRD](prd.md). In the tables, **Y
 | --- | --- | --- |
 | ✅ Event schema and seeded generator | | D1–D3 |
 | ✅ Generator v2: low-and-slow s1/s5, decoys, account profiles, chain labels, traveler fixture, size cap | | D3.1–D3.4, D6 |
-| Register on HackerEarth (name, email, company, LinkedIn, GitHub) | You | Submission |
+| ✅ Register on HackerEarth (name, email, company, LinkedIn, GitHub) | You | Submission |
 | ✅ Sign up for Meko Cloud (Free), create an API key under **Settings > API Keys**, put it in `.env` as `MEKO_API_KEY=` | You | K9 |
 | ✅ Create an empty public GitHub repo; then the existing history gets pushed to it | You | Submission |
-| Ask on the Meko Discord: is AMP Postgres on the Free plan, when does the monthly quota reset, and are hackathon credits available? | You | K5, K8 |
+| Ask on the Meko Discord when the monthly quota resets, and whether hackathon credits are available. AMP is answered (K5). | You | K8 |
 | ✅ Meko client in `packages/engine/src/meko/`: MCP (memory, knowledge base, conversations) and REST (datapacks, uploads, artifacts, promotion) | | K9 |
-| Create the working datapacks, `tripwire-signals` and `tripwire-patterns`. Needs your OK: they use 2 of the 8 slots left ([budget](spikes.md#datapacks-budget)) | | §7 |
-| ✅ Spike script that answers K1–K11; results written to [`docs/spikes.md`](spikes.md). Still open: K11 (re-run once `tripwire-patterns` exists, then check its trace in the portal), the portal checks for K7 and K8, and the reset date (K8) | | K1–K11 |
+| ✅ Create the working datapacks, `tripwire-signals` and `tripwire-patterns` (created 2026-11-24; [budget](spikes.md#datapacks-budget)) | | §7 |
+| ✅ Spike script that answers K1–K11; results written to [`docs/spikes.md`](spikes.md). Only the reset date (K8) is still open. | | K1–K11 |
 | ✅ Update `design.md` with the answers | | |
 
 ### M1 Data and agents, OFF mode (Nov 30–Dec 6)
 
 | Task | Req |
 | --- | --- |
-| Postgres store (AMP or PGlite): events table, device↔account and payee↔account views. The runner inserts each event as it replays. | D4 |
-| Knowledge docs in `knowledge/`: fraud playbooks (one per attack type), `risk-rules.md`, `step-up-policy.md`; upload script | A5, C2 |
-| Runner: fast mode, `--meko off`, run record, quota guard | R1, R4, R6, R7 |
-| All four detection agents in OFF mode, reading the account profiles, with tests | A1–A5, D6 |
+| ✅ Postgres store (PGlite, K5): events table, device↔account and payee↔account views. The runner inserts each event as it replays. | D4 |
+| ✅ Knowledge docs in `knowledge/`: fraud playbooks (one per attack type), `risk-rules.md`, `step-up-policy.md` | A5, C2 |
+| Upload script for the knowledge docs into `tripwire-patterns` | A5, C2 |
+| ✅ Runner: fast mode, `--meko off`, run record. The quota guard moved to M2, with the ON runner (spec §6). | R1, R4, R6 |
+| ✅ All four detection agents in OFF mode, reading the account profiles, with tests | A1–A5, D6 |
 
 Exit check: `npm run replay -- --seed 42 --meko off` writes signals and a `runs/<id>.json` file. A test shows that an agent query can't see an event that hasn't been replayed yet.
 
@@ -143,8 +144,8 @@ Every check runs from one spike script against the real Meko account (`npm run s
 | Resource | Free limit | Per ON run | Notes |
 | --- | --- | --- | --- |
 | Conversation calls | 1,000 / month | 120 ceiling | STEP-UP and BLOCK traces, case files, allow ledger (14), approvals. Measured by the M2 dry run before the first ON run. |
-| Searches | 10,000 / month | ≤ 800 | Agent recall, plus a signal check on each decision trigger (275 on seed 42). Measured by the M2 dry run. |
-| Datapacks | 10 ever | 2 working, 6 for evaluation | Deleting one doesn't free its slot. 2 are used (the default one and `tripwire-spike`), and promoted patterns can't be deleted (K7), so this uses all 10, with none spare; see the [budget](spikes.md#datapacks-budget) |
+| Searches | 1,000 memory searches and 1,000 KB searches / month (K8) | ≤ 800 in all | Memory searches: agent recall, plus a signal check on each decision trigger (275 on seed 42). KB searches: patterns and playbook passages. `context_search` isn't counted, but Tripwire doesn't use it. The M2 dry run measures each kind. |
+| Datapacks | 10 ever | 2 working, 6 for evaluation | Deleting one doesn't free its slot. 4 are used (the default one, `tripwire-spike` and the 2 working ones), and promoted patterns can't be deleted through the API (K7), so this uses all 10, with none spare; see the [budget](spikes.md#datapacks-budget) |
 | Knowledge storage | 100 MB | < 1 MB | A handful of markdown files |
 
 All development runs use OFF mode, which makes no Meko calls. ON runs are kept for integration checks and evaluation:
@@ -154,7 +155,12 @@ All development runs use OFF mode, which makes no Meko calls. ON runs are kept f
 | December | M2: 2, M3: 4 | 720 |
 | January | M6 evaluation: 6, ablation: 1 (Could), demo footage: 1 | 960 (about 800 expected) |
 
-January is tight. The quota guard refuses a run that would go over. If the quota runs short, drop the ablation first, then record the video from recorded runs.
+**The search caps, not conversations, decide how many ON runs fit.** With up to 800 searches a run and 1,000 memory searches a month, Free fits about one full ON run a month, so the 6 December runs and 7–8 January runs don't fit as planned. The plan:
+1. The M2 dry run measures each run's real memory and KB searches before the first ON run.
+2. If they're well under the caps, the agents recall less (for example only for events a decision depends on) and Free stretches further.
+3. When the quota runs out, the owner upgrades to Meko Standard ($25/month). Its search caps aren't on the pricing page, so they're checked in the portal first.
+
+The quota guard refuses a run that would go over. If the quota still runs short, drop the ablation first, then record the video from recorded runs.
 
 ## Cut list
 

@@ -39,13 +39,15 @@ The REST API has **no** memory-add, memory-search or knowledge-search endpoints.
 | Limit | Value |
 | --- | --- |
 | Conversations (`conversation_add_message`) | 1,000 / month |
-| Retrievals (`context_search`, `memory_search`, `knowledgebase_search`) | 10,000 / month |
+| Memory searches (`memory_search`) | 1,000 / month (the Usage page, K8; the docs say 10,000 retrievals) |
+| KB searches (`knowledgebase_search`) | 1,000 / month (K8) |
+| Memory adds (`memory_add`) | 10,000 / month; Meko's own extraction isn't counted (K8) |
 | Datapacks | 10 **created ever** (deleting doesn't free a slot) |
 | Knowledge storage | 100 MB, 5 MB per file |
 | Artifacts | 5 MB each, expire 30 days after last access |
 | REST rate | 60 req/min per key (burst 10, `Retry-After: 60`), 10 req/s per IP (burst 20) |
 | AMP compute | 0.5 vCPU (K5) |
-| Monthly reset date | Not documented; ask on Discord (K8) |
+| Monthly reset date | Not documented and not on the Usage page; ask on Discord (K8) |
 
 A 2,000-event run can't call Meko for every event. Agents score events locally, and only risk signals, non-trivial decisions and patterns reach Meko. Each run is also recorded to `runs/*.json`, so dashboard replays and metrics don't spend quota.
 
@@ -58,7 +60,10 @@ Found by the [week-1 checks](spikes.md) on 2026-11-23, beyond what the docs say:
 - **`memory_add` stores the text verbatim** and returns it with its ID (`results[0].id`). K1 found one on the first search, 1.1 s after the call returned. That is one sample, so it sets no upper bound. Metadata comes back on search.
 - **`memory_search` drops rows under a raw similarity of 0.2** but returns unrelated rows above it, so callers must check the entity themselves.
 - **`context_search`'s `knowledge_base` bucket doesn't include promoted patterns.** `knowledgebase_search` returns them, with `metadata_filters.source: "memory"` and the approval conversation's ID as `document_id` (K3).
-- **Promoted memories leave the private store and can't be deleted.** `memory_delete_by_id` answers `memory_is_promoted`, and they aren't knowledge-base files (K7).
+- **Promoted memories leave the private store and can't be deleted through the API.** `memory_delete_by_id` answers `memory_is_promoted`, and they aren't knowledge-base files. An owner can delete one on the datapack's Collective Memory page in the portal (K7).
+- **A search shows in the trace of the datapack it ran in.** Searches tagged with a case's `conversation_id` appear in Observe under a trace with that ID, but each in its own datapack's view (K11).
+- **A 32-hex `session_id` becomes the conversation ID unchanged**, and `conversation_get` on an unknown ID answers `not_found` (K10).
+- **Traces include Meko's own LLM work.** Each `conversation_add_message` trace shows the memory extraction's OpenAI spans and an estimated cost. Tripwire makes none of those calls.
 - **Conversation turns are mined for memories.** Within about 30 s, Meko saves one memory from a turn's user input, under the conversation's agent ID and tagged with the conversation. Nothing came from `output` or `reasoning` (K6).
 - **Conversation writes dedupe.** The same `seed` returns the same message ID and stores one message, and the same `session_id` returns the same conversation (K10). A 13 KB turn is stored whole. Each call can still be mined for a memory of its own, so a retry can leave an extra one (K6, K10).
 - **Some answers carry the account owner's name and email** (`memory_get_all` rows, `GET /datapacks`), so raw answers are never logged.
