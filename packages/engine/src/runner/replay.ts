@@ -1,15 +1,18 @@
 import { type Action, decide, triggerOf, type Trigger, type Verdict } from "../agents/decision.js";
-import { agentsFor, detect, OWNER, toSignals } from "../agents/index.js";
-import type { AgentContext, Finding } from "../agents/types.js";
+import { agentBatch, type AgentBatch, type Closer } from "../agents/batch.js";
+import { AGENTS, agentsFor, detect, OWNER, toSignals } from "../agents/index.js";
+import { aiSignals, type ReviewInput, reviewPrompt } from "../agents/review.js";
+import type { Agent, AgentContext, Finding } from "../agents/types.js";
 import { generate } from "../generator/generate.js";
 import type { Mcp } from "../meko/mcp.js";
 import type { Wait } from "../meko/retry.js";
 import { type Metrics, scoreRun } from "../metrics.js";
-import { localSignals, type SignalStore } from "../signals/local.js";
+import { isRelevant, localSignals, type SignalStore } from "../signals/local.js";
 import { mekoSignals, type Retrieval } from "../signals/meko.js";
 import { openStore, type EventStore } from "../store/store.js";
 import type { AccountProfile, AgentName, Label, RiskSignal, StepUpResultEvent, TripwireEvent } from "../types.js";
 import { type Denial, type Locks, locks, otpPasses } from "./outcomes.js";
+import type { Review, Reviewer } from "./review.js";
 import { type KnowledgeDocuments, noTrace, openTrace, type Quote, type Trace } from "./trace.js";
 
 export type RunFinding = Finding & { agent: AgentName; eventId: string };
@@ -41,6 +44,7 @@ export type RunRecord = {
   runId: string;
   seed: number;
   meko: "off" | "dry" | "on";
+  agents: "rules" | "llm"; // llm: the detection agents' models also review every event, on top of the rules (M2.5)
   status: "ok" | "failed";
   error?: string;
   startedAt: string;
@@ -56,6 +60,7 @@ export type RunRecord = {
   conversations?: { run: string; ledger: string; cases: Record<string, string> };
   retrievals?: Retrieval[]; // every Meko search of the run, including those for events without a decision (C5)
   mekoCalls?: Record<string, number>; // attempts by tool, retries included, for the quota ledger (R7)
+  reviews?: Review[]; // llm mode: every batch the agents' models reviewed, who answered, and what it added
 };
 
 /** Whether the R8 audit passed: what it kept and deleted, or why it couldn't vouch for the datapack. */
@@ -82,7 +87,11 @@ type World = {
   label(id: string): Label;
   record: RunRecord;
   seq: number;
+  ai?: AiWorld;
 };
+/** llm mode: how the detection agents' models are asked. */
+export type AiRun = { reviewer: Reviewer };
+type AiWorld = AiRun & { batches: Map<string, AgentBatch>; uaShare: AgentContext["uaShare"] };
 export type Stream = { seed: number; events: TripwireEvent[]; labels: Label[]; accounts: AccountProfile[] };
 
 /**
@@ -93,11 +102,8 @@ export type Stream = { seed: number; events: TripwireEvent[]; labels: Label[]; a
  */
 export const replay = (seed: number) => replayStream({ seed, ...generate(seed) });
 
-export async function replayStream({ seed, events, labels, accounts }: Stream, meko?: MekoRun): Promise<RunRecord> {
-  const startedAt = new Date().toISOString(); // wall clock for the record only; decisions use event time
-  const mode = meko?.mode ?? "off";
-  const record: RunRecord = { runId: `${seed}-${mode}-${startedAt.replace(/[:.]/g, "-")}`, seed, meko: mode, status: "ok", startedAt,
-    finishedAt: startedAt, events: 0, findings: [], signals: [], decisions: [], denied: [], stepUps: [] };
+export async function replayStream({ seed, events, labels, accounts }: Stream, meko?: MekoRun, ai?: AiRun): Promise<RunRecord> {
+  const record = newRecord(seed, meko?.mode ?? "off", ai);
   let store: EventStore | undefined;
   let session: Session | undefined;
   try {
@@ -106,12 +112,12 @@ export async function replayStream({ seed, events, labels, accounts }: Stream, m
     const profile = profileLookup(accounts, events);
     session = await sessionFor(meko, record.runId);
     store = await openStore();
-    const world: World = { ctx: { history: store, profile, uaShare: browserShares(accounts) }, signals: session.signals, store,
-      locks: locks(profile), trace: session.trace, label, record, seq: 0 };
+    const world = newWorld({ store, session, profile, label, record, uaShare: browserShares(accounts) }, ai);
     for (const e of events) {
       await replayEvent(e, world);
       record.events++;
     }
+    if (world.ai) await flushBatches(world, world.ai);
     record.metrics = scoreRun({ decisions: record.decisions, refused: refusedIds(record) }, events, labels);
   } catch (err) {
     fail(record, err);
@@ -123,6 +129,21 @@ export async function replayStream({ seed, events, labels, accounts }: Stream, m
     record.finishedAt = new Date().toISOString();
   }
   return record;
+}
+
+type Parts = { store: EventStore; session: Session; profile: AgentContext["profile"]; label: World["label"]; record: RunRecord; uaShare: AgentContext["uaShare"] };
+
+/** In llm mode each detection agent gets an empty batch for its model to review. */
+function newWorld({ store, session, profile, label, record, uaShare }: Parts, ai: AiRun | undefined): World {
+  return { ctx: { history: store, profile, uaShare }, signals: session.signals, store, locks: locks(profile), trace: session.trace, label, record,
+    seq: 0, ...(ai && { ai: { ...ai, batches: new Map(AGENTS.map((a) => [a.name, agentBatch()])), uaShare } }) };
+}
+
+function newRecord(seed: number, mode: RunRecord["meko"], ai: AiRun | undefined): RunRecord {
+  const startedAt = new Date().toISOString(); // wall clock for the record only; decisions use event time
+  const agents = ai ? "llm" : "rules";
+  return { runId: `${seed}-${mode}${ai ? "-llm" : ""}-${startedAt.replace(/[:.]/g, "-")}`, seed, meko: mode, agents, status: "ok", startedAt,
+    finishedAt: startedAt, events: 0, findings: [], signals: [], decisions: [], denied: [], stepUps: [], ...(ai && { reviews: [] }) };
 }
 
 type Session = { trace: Trace; signals: SignalStore; finish(): Promise<{ kept: number; deleted: number } | undefined> };
@@ -159,7 +180,8 @@ async function replayEvent(e: TripwireEvent, w: World) {
   const staged = await detectAll(e, w.ctx, w.signals);
   await w.store.insert(e, w.seq++); // if this fails, nothing from the event reaches the record or the signal store
   await publish(staged, w.signals, w.record);
-  await review(e, staged.signals, w);
+  const added = w.ai ? await reviewBatches(e, staged, w, w.ai) : [];
+  await review(e, [...staged.signals, ...added.filter((s) => s.eventId === e.id)], w, added);
 }
 
 /** Every agent that sees the event, against signals from earlier events only. */
@@ -180,17 +202,60 @@ async function publish(staged: Staged, signals: SignalStore, record: RunRecord) 
 }
 
 /**
+ * llm mode (M2.5): the event joins the batch of every agent that saw it, and a batch that can't wait is reviewed now,
+ * before the event's decision. Returns the signals the models added, which that decision sees at once.
+ */
+async function reviewBatches(e: TripwireEvent, staged: Staged, w: World, ai: AiWorld): Promise<RiskSignal[]> {
+  const context = await decisionContext(e, staged.signals, w);
+  const added: RiskSignal[] = [];
+  for (const agent of agentsFor(e)) {
+    const batch = ai.batches.get(agent.name)!;
+    batch.add(e, staged.findings.filter((f) => f.agent === agent.name));
+    const reason = batch.closer(e, context.withEvidence);
+    if (reason) added.push(...(await reviewBatch(agent, reason, e.id, reason === "decision" ? context.recalled : [], w, ai)));
+  }
+  return added;
+}
+
+/** Whether the event will get a decision with evidence, and the earlier signals it sees: the search its decision reuses. */
+async function decisionContext(e: TripwireEvent, onEvent: RiskSignal[], w: World): Promise<{ withEvidence: boolean; recalled: RiskSignal[] }> {
+  const owner = OWNER[e.kind];
+  const visible = owner ? onEvent.filter((s) => w.signals.sees(owner, s)) : [];
+  if (!owner || !triggerOf(e, visible)) return { withEvidence: false, recalled: [] };
+  const recalled = await w.signals.forDecision(owner, e);
+  return { withEvidence: visible.length + recalled.length > 0, recalled };
+}
+
+/** One model review of an agent's waiting batch. What it adds goes out like any signal; the rules' signals are untouched. */
+async function reviewBatch(agent: Agent, reason: Closer, closedBy: string, recalled: RiskSignal[], w: World, ai: AiWorld): Promise<RiskSignal[]> {
+  const input: ReviewInput = { agent, ...ai.batches.get(agent.name)!.take(ai.uaShare), recalled };
+  const prompt = reviewPrompt(input);
+  const { proposed, ...answered } = await ai.reviewer(input);
+  const added = aiSignals(agent.name, proposed, input.events, w.record.signals);
+  for (const s of added) await w.signals.write(s);
+  w.record.signals.push(...added);
+  w.record.reviews!.push({ agent: agent.name, reason, closedBy, events: input.events.length, promptChars: prompt.system.length + prompt.user.length,
+    ...answered, proposed: proposed.length, added: added.length });
+  return added;
+}
+
+/** The end of the stream: every batch still waiting is reviewed, so every event an agent saw gets its model's review. */
+async function flushBatches(w: World, ai: AiWorld) {
+  for (const agent of AGENTS) if (ai.batches.get(agent.name)!.size() > 0) await reviewBatch(agent, "end", "end of stream", [], w, ai);
+}
+
+/**
  * The decision agent on a stored event (PRD C1–C3), then the world's answer (R2, R3). It sees what its mode allows:
  * in OFF mode only the signals of the agent that owns the event, from earlier events and from this one. A STEP-UP or
  * BLOCK gets its own trace turn (C4); every other event goes into the day's allow ledger (C5).
  */
-async function review(e: TripwireEvent, onEvent: RiskSignal[], w: World) {
+async function review(e: TripwireEvent, onEvent: RiskSignal[], w: World, batchAdded: RiskSignal[] = []) {
   const owner = OWNER[e.kind];
   const visible = owner ? onEvent.filter((s) => w.signals.sees(owner, s)) : [];
   const trigger = owner && triggerOf(e, visible);
   if (!owner || !trigger) return w.trace.ledger(e.ts, ledgerLine(e, "ALLOW unreviewed", onEvent, w.trace.retrievalsFor(e.id)));
   const t0 = performance.now();
-  const verdict = decide(e, [...(await w.signals.forDecision(owner, e)), ...visible], w.ctx.profile(e.accountId));
+  const verdict = decide(e, await decisionSignals(e, owner, visible, batchAdded, w), w.ctx.profile(e.accountId));
   const { quotes, missing } = verdict.action === "ALLOW" ? { quotes: [], missing: [] } : await w.trace.quotes(e, verdict);
   const latencyMs = Math.round(performance.now() - t0);
   const outcome = await settle(e, verdict.action, w);
@@ -203,6 +268,16 @@ async function review(e: TripwireEvent, onEvent: RiskSignal[], w: World) {
     return w.trace.ledger(e.ts, ledgerLine(e, `ALLOW reviewed (${trigger}), risk ${verdict.risk.toFixed(2)}`, verdict.used, decision.retrievals));
   }
   await w.trace.flagged({ eventId: e.id, action: decision.action, outcome, reasoning: decision.reasoning, record: decision }, e.accountId);
+}
+
+/**
+ * What the decision weighs: the earlier signals it may see, the signals on the event, and what a batch review just
+ * added about related events, which a search made before the review couldn't return. Each signal counts once.
+ */
+async function decisionSignals(e: TripwireEvent, owner: AgentName, visible: RiskSignal[], batchAdded: RiskSignal[], w: World): Promise<RiskSignal[]> {
+  const fresh = batchAdded.filter((s) => s.eventId !== e.id && isRelevant(s, e) && w.signals.sees(owner, s));
+  const all = [...(await w.signals.forDecision(owner, e)), ...visible, ...fresh];
+  return [...new Map(all.map((s) => [`${s.eventId}/${s.ruleId}`, s])).values()]; // OFF mode's own store already holds the fresh ones
 }
 
 /**
@@ -222,7 +297,7 @@ function searchLine(r: Retrieval): string {
 }
 
 const rulesOf = (v: Verdict) =>
-  [...v.used.map((s) => s.ruleId), v.capped ? "policy.travel-cap" : `policy.${v.action.toLowerCase().replace("_", "-")}`];
+  [...v.used.map((s) => s.ruleId), v.cap ? `policy.${v.cap}-cap` : `policy.${v.action.toLowerCase().replace("_", "-")}`];
 
 /** A BLOCK stops. A STEP-UP sends a code to the registered phone; the runner answers for whoever holds it (R3). */
 async function settle(e: TripwireEvent, action: Action, w: World): Promise<Outcome> {
@@ -284,7 +359,7 @@ function profileLookup(accounts: AccountProfile[], events: TripwireEvent[]): Age
 }
 
 /** Share of all known devices that use each browser string. */
-function browserShares(accounts: AccountProfile[]): AgentContext["uaShare"] {
+export function browserShares(accounts: AccountProfile[]): AgentContext["uaShare"] {
   const devices = accounts.flatMap((a) => a.knownDevices);
   const counts = new Map<string, number>();
   for (const d of devices) counts.set(d.userAgent, (counts.get(d.userAgent) ?? 0) + 1);

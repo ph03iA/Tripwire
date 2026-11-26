@@ -3,7 +3,6 @@ import { HttpError, retryAfterMs, type Wait, withRetry } from "../meko/retry.js"
 import { type ModelSpec, PROVIDERS } from "./models.js";
 
 const TIMEOUT_MS = 60_000;
-const MAX_TOKENS = 4_096; // reasoning tokens count against this too
 
 export class LlmError extends HttpError {
   override name = "LlmError";
@@ -81,7 +80,7 @@ const bodyOf = ({ model, system, user, schemaName, schema, maxTokens }: ChatRequ
   model: model.id,
   messages: [{ role: "system", content: system }, { role: "user", content: user }],
   response_format: { type: "json_schema", json_schema: { name: schemaName, schema, strict: true } },
-  max_tokens: maxTokens ?? MAX_TOKENS,
+  max_tokens: maxTokens ?? model.maxTokens,
   ...model.params,
 });
 

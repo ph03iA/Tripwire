@@ -80,9 +80,9 @@ function judge(s: Sample, a: ChatAnswer): Pick<Result, "problems" | "flagged" | 
 function report(all: Sample[], runs: ModelRun[]) {
   const batches = all.filter((s): s is BatchSample => s.kind === "batch");
   const decisions = all.filter((s): s is DecisionSample => s.kind === "decision");
-  console.log("\n| model | answered | valid | 429s | batch: attacks flagged | batch: legit flagged | decisions: attacks stopped | legit ALLOW / STEP-UP / BLOCK | tokens per batch call | per decision | median time |");
-  console.log("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
-  console.log(`| rules | – | – | – | ${batchScore(batches, (s) => s.ruleFlags)} | ${legitFlagged(batches, (s) => s.ruleFlags)} | ${stopped(decisions, (s) => s.rulesAction)} | ${legitActions(decisions, (s) => s.rulesAction)} | – | – | – |`);
+  console.log("\n| model | answered | valid | 429s | batch: attacks flagged, rules + AI | batch: legit flagged, rules + AI | AI added: attacks / legit | decisions: attacks stopped | legit ALLOW / STEP-UP / BLOCK | tokens per batch call | per decision | median time |");
+  console.log("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+  console.log(`| rules | – | – | – | ${batchScore(batches, (s) => s.ruleFlags)} | ${legitFlagged(batches, (s) => s.ruleFlags)} | – | ${stopped(decisions, (s) => s.rulesAction)} | ${legitActions(decisions, (s) => s.rulesAction)} | – | – | – |`);
   for (const run of runs) console.log(run.skipped ? `| ${run.model} | skipped: ${run.skipped} |` : row(run, batches, decisions));
   for (const run of runs) {
     const errors = [...new Set(run.results.flatMap((r) => (r.error ? [r.error] : r.problems)))];
@@ -93,14 +93,21 @@ function report(all: Sample[], runs: ModelRun[]) {
 function row(run: ModelRun, batches: BatchSample[], decisions: DecisionSample[]): string {
   const by = new Map(run.results.map((r) => [r.sample, r]));
   const flags = (s: BatchSample) => by.get(s.id)?.flagged ?? [];
+  const withFloor = (s: BatchSample) => [...new Set([...s.ruleFlags, ...flags(s)])]; // the rules' signals are shared whatever the model says
   const action = (s: DecisionSample) => by.get(s.id)?.action;
   const ok = run.results.filter((r) => r.ok);
   const valid = ok.filter((r) => r.problems.length === 0).length;
   const rateLimited = ok.reduce((n, r) => n + (r.rateLimited ?? 0), 0) + run.results.filter((r) => r.error?.includes("HTTP 429")).length;
   const ms = ok.map((r) => r.ms!).sort((a, b) => a - b);
   const median = ms.length ? `${(ms[Math.floor(ms.length / 2)]! / 1000).toFixed(1)} s` : "–";
-  return `| ${run.model} | ${ok.length}/${run.results.length} | ${valid} | ${rateLimited} | ${batchScore(batches, flags)} | ${legitFlagged(batches, flags)} | `
-    + `${stopped(decisions, action)} | ${legitActions(decisions, action)} | ${tokens(ok, "batch:")} | ${tokens(ok, "decision:")} | ${median} |`;
+  return `| ${run.model} | ${ok.length}/${run.results.length} | ${valid} | ${rateLimited} | ${batchScore(batches, withFloor)} | ${legitFlagged(batches, withFloor)} | `
+    + `${added(batches, flags)} | ${stopped(decisions, action)} | ${legitActions(decisions, action)} | ${tokens(ok, "batch:")} | ${tokens(ok, "decision:")} | ${median} |`;
+}
+
+/** What the model flagged that the rules hadn't: attack events, then legit ones. */
+function added(batches: BatchSample[], flags: (s: BatchSample) => string[]): string {
+  const extra = batches.flatMap((s) => flags(s).filter((id) => !s.ruleFlags.includes(id)).map((id) => s.attacks.includes(id)));
+  return `${extra.filter(Boolean).length} / ${extra.filter((isAttack) => !isAttack).length}`;
 }
 
 function batchScore(batches: BatchSample[], flags: (s: BatchSample) => string[]): string {
