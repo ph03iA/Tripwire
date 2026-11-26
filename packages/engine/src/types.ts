@@ -95,6 +95,7 @@ export type RiskSignal = {
   ts: string;
   entities: { ip?: string; deviceId?: string; payeeId?: string; merchantId?: string };
   evidence: string; // one sentence
+  memoryId?: string; // its Meko memory, in ON mode: the only IDs a run trusts (R8)
 };
 
 /** What the payments app knows about a customer before the stream starts. Agents may read it. */

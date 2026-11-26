@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { generate } from "../generator/generate.js";
+import { dryDocuments, dryMeko } from "../meko/dry.js";
+import type { Mcp } from "../meko/mcp.js";
 import type { Label, TripwireEvent } from "../types.js";
 import { replay, replayStream, type RunRecord } from "./replay.js";
 
@@ -148,6 +150,56 @@ test("a failed step-up stops the attacker: their device is refused everywhere, a
   assert.equal(record.events, stream.length);
 });
 
+// ON mode, against the in-process stand-in for Meko: the same pipeline a live run takes, with ideal search.
+const onDryOptions = (mcp: Mcp) => ({ mode: "dry" as const, mcp, datapacks: { signals: "dry-signals", patterns: "dry-patterns" },
+  documents: dryDocuments(), wait: async () => {} });
+const dry = dryMeko();
+let dryRun: RunRecord | undefined;
+const onDry = async () => (dryRun ??= await replayStream({ seed: 42, events, labels, accounts },
+  onDryOptions(dry)));
+const phase = (chainId: string) => async (r: RunRecord) => r.metrics!.chains.find((c) => c.chainId === chainId)!.stoppedAt;
+
+test("ON (dry): shared signals stop s2 at the reset and s1 and s5 at the email change, a phase earlier than OFF", async () => {
+  const [on, off] = [await onDry(), await run()];
+  assert.equal(on.error, undefined);
+  assert.equal(on.meko, "dry");
+  assert.deepEqual(await Promise.all(["s1", "s2", "s5"].map((c) => phase(c)(on))), [3, 2, 3]);
+  assert.deepEqual(await Promise.all(["s1", "s2", "s5"].map((c) => phase(c)(off))), [4, 3, 4]);
+  assert.ok(on.metrics!.prevented > off.metrics!.prevented && on.metrics!.caughtEarly > off.metrics!.caughtEarly);
+});
+
+test("ON (dry): every STEP-UP and BLOCK has its own trace turn, and every other event is in the allow ledger (C4, C5)", async () => {
+  const record = await onDry();
+  const flagged = record.decisions.filter((d) => d.action !== "ALLOW");
+  for (const d of flagged) {
+    const turns = dry.conversations.get(d.conversationId!)!.messages.filter((m) => m.output.startsWith(`Decision for ${d.eventId}\n`));
+    assert.equal(turns.length, 1, d.eventId);
+    assert.deepEqual(d.quotes.map((q) => q.documentId), [dryDocuments().playbooks[0], dryDocuments().policy], "a playbook passage, then the policy's");
+    assert.equal(d.missingQuotes, undefined);
+    assert.ok(d.retrievals.every((r) => r.conversationId === d.conversationId), "searches are filed under the case (K11)");
+  }
+  const ledger = dry.conversations.get(record.conversations!.ledger)!.messages.map((m) => m.output).join("\n");
+  const listed = new Set(ledger.match(/\bevt_\d{6}\b/g));
+  const own = new Set(flagged.map((d) => d.eventId));
+  assert.deepEqual(events.filter((e) => !own.has(e.id) && !listed.has(e.id)).map((e) => e.id), [], "no event is left out");
+  assert.ok(record.denied.length > 0 && record.denied.every((d) => ledger.includes(`${d.eventId} ${d.accountId}`)));
+  const inputs = new Set([...dry.conversations.values()].flatMap((c) => c.messages.map((m) => m.input)));
+  assert.equal(inputs.size, 2, "R8: every turn's user input is one of two fixed, fact-free lines");
+});
+
+test("ON (dry): the hygiene audit leaves only this run's signals, and the same seed gives the same decisions", async () => {
+  const record = await onDry();
+  assert.ok(record.audit?.passed && record.audit.kept === record.signals.length, JSON.stringify(record.audit));
+  assert.ok(record.audit.deleted > 0, "the memories Meko mined from turns were deleted");
+  assert.deepEqual(new Set(dry.memories.keys()), new Set(record.signals.map((s) => s.memoryId)));
+  const again = await replayStream({ seed: 42, events, labels, accounts },
+    onDryOptions(dryMeko()));
+  // A run's conversation IDs are hashed from its run ID, which carries the start time, so they're the one other thing that differs.
+  const comparable = (r: RunRecord) => r.decisions.map((d) => ({ ...d, latencyMs: 0, conversationId: "",
+    retrievals: d.retrievals.map((x) => ({ ...x, conversationId: "" })) }));
+  assert.deepEqual(comparable(again), comparable(record));
+});
+
 test("a payout stopped at its step-up doesn't become the owner's last location (review finding 2)", async () => {
   // Regression: the owner's next login at home scored "Bangkok to Mumbai would need 3002 km/h" and got a STEP-UP.
   const mumbai = accounts.find((a) => a.home.city === "Mumbai")!;
@@ -162,4 +214,35 @@ test("a payout stopped at its step-up doesn't become the owner's last location (
   assert.equal(record.error, undefined);
   assert.deepEqual(record.decisions.map((d) => [d.eventId, d.action, d.outcome]), [["x1", "STEP_UP", "failed"]], "no decision on the owner's login");
   assert.deepEqual(record.findings.filter((f) => f.eventId === "h2").map((f) => f.ruleId), []);
+});
+
+test("ON (dry): a run that fails midway still runs the R8 audit, and keeps its first error (review finding 7)", async () => {
+  // Regression: a search failing after the first trace turn left the failed run with no audit and a mined memory behind.
+  const stand = dryMeko();
+  let turns = 0;
+  const failing: Mcp = { ...stand, call: async (tool, args, op) => {
+    if (tool === "conversation_add_message") turns++;
+    if (tool === "memory_search" && turns > 0) throw new Error("socket hang up");
+    return stand.call(tool, args, op);
+  } };
+  const record = await replayStream({ seed: 42, events, labels, accounts }, onDryOptions(failing));
+  assert.deepEqual([record.status, record.error], ["failed", "socket hang up"]);
+  assert.equal(record.audit?.passed, true, JSON.stringify(record.audit));
+  assert.deepEqual([...stand.memories.values()].filter((m) => m.agent_id === "tripwire:decision"), [], "nothing mined is left");
+  assert.equal(record.metrics, undefined, "a failed run carries no metrics");
+});
+
+test("ON (dry): every search in the allow ledger is spelled out, and the record keeps it (review finding 10)", async () => {
+  // Regression: unreviewed lines said "searches 1", and no record held those searches.
+  const record = await onDry();
+  const ledger = dry.conversations.get(record.conversations!.ledger)!.messages.flatMap((m) => m.output.split("\n"));
+  const searched = ledger.filter((l) => l.includes("ALLOW unreviewed") && l.includes("memory_search returned"));
+  assert.ok(searched.length > 0);
+  for (const line of searched) {
+    const eventId = line.split(" ")[1]!;
+    const kept = record.retrievals!.filter((r) => r.eventId === eventId);
+    assert.ok(kept.length > 0, `${eventId}: the record holds its search`);
+    assert.ok(line.includes(`memory_search returned ${kept[0]!.returnedIds.length}, used ${kept[0]!.usedIds.length}`), line);
+  }
+  assert.ok(!ledger.some((l) => /\| searches \d/.test(l)), "no bare search counts");
 });

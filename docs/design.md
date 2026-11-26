@@ -54,7 +54,7 @@ The brief asks for these two to stay separate. With a fresh `patterns` datapack 
 
 - **World simulator:** the runner may read the labels, but only to simulate the world: who holds the phone when an OTP is sent. Agents never see labels, scenario IDs or steps; they see only events, profiles and the `step_up_result` events the runner writes.
 - **No future data:** each event is inserted into Postgres when it is replayed, so no query can see a later event.
-- **Stops are final for the attacker:** after a BLOCK or a failed STEP-UP, later events from the device that triggered it are denied. So are payments and credential changes from devices not in the account's profile or verified history.
+- **Stops are final for the attacker:** after a BLOCK or a failed STEP-UP, later events from the device that triggered it are denied. So are payments and credential changes from devices not in the account's profile and not verified by a passed step-up. A denied event is never scored or stored.
 - **Prevention is measured, not assumed:** a chain counts as prevented only if the runner actually denied its takeover event.
 
 ## Data
@@ -116,22 +116,34 @@ type RiskSignal = {
   score: number;          // 0..1
   entities: { ip?: string; deviceId?: string; merchantId?: string; payeeId?: string };
   evidence: string;       // one sentence
+  memoryId?: string;      // its Meko memory, in ON mode
   patternId?: string;     // set on pattern_match
 };
-// Sent to memory_add as one line, so keyword and entity boosts work:
-// "[signal][device] acc_0042 shared_device 0.82 dev_9f3a seen on 5 accounts in 48h (evt_000913, 2026-11-03T10:22Z)"
+// Sent to memory_add as one line naming every entity, so keyword search finds it by any of them:
+// "[signal][device] acc_0042 shared_device 0.8 device dev_9f3a ip 49.36.1.7: device used by 3 other accounts in 7 days (evt_000913/device.shared, 2026-11-03T10:22:00.000Z)"
 
-type Retrieval = { agent: string; tool: string; datapack: string; query: string; returnedIds: string[]; usedIds: string[]; error?: string };
+// Built in packages/engine/src/signals/meko.ts and runner/replay.ts; patternsMatched arrives with pattern recall (M3).
+type Retrieval = {
+  eventId: string; agent: string;                   // the Meko agent ID that searched
+  tool: "memory_search" | "knowledgebase_search"; datapack: string;
+  conversationId: string;                           // the account's case, so the portal shows it in that trace (K11)
+  query: string; returnedIds: string[]; usedIds: string[];
+  timedOut?: string[];                              // fresh signals the search still missed after repeats (A7)
+};
 
 type Decision = {
-  id: string; accountId: string; triggerEventId: string;
+  eventId: string; accountId: string; ts: string; trigger: "sensitive" | "signal";
   action: "ALLOW" | "STEP_UP" | "BLOCK";
   risk: number;           // noisy-OR, 0..1
-  signalsUsed: string[]; patternsMatched: string[]; rulesApplied: string[];
-  quotes: { documentId: string; text: string }[];  // matching playbook + step-up policy (ON only)
-  retrievals: Retrieval[];                          // every Meko search any agent made for this event
-  reasoning: string;      // the plain-English "why", generated from the fields above, also sent to Meko
-  conversationId?: string; latencyMs: number;
+  capped: boolean;        // a BLOCK lowered to STEP-UP: travel only, on a profile device
+  signalsUsed: string[];  // "<eventId>/<ruleId>" of the strongest signal of each type
+  rulesApplied: string[]; // those signals' rules, then the policy rule
+  quotes: { documentId: string; text: string }[];  // playbook + step-up policy passages, on a STEP-UP or BLOCK (ON only)
+  retrievals: Retrieval[];                          // every Meko search made for this event
+  reasoning: string;      // the plain-English "why", a template over the fields above, also sent to Meko
+  conversationId?: string;
+  outcome: "allowed" | "passed" | "failed" | "blocked";
+  latencyMs: number;
 };
 ```
 

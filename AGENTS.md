@@ -29,6 +29,8 @@ For background only, `handoff/claude-session.md` holds the original planning con
 npm install
 npm run generate     # seeded synthetic stream → data/
 npm run replay -- --seed 42 --meko off   # detection agents over the stream → runs/
+npm run replay -- --seed 42 --meko dry   # the ON pipeline against an in-process Meko: counts the calls, spends nothing
+npm run replay -- --seed 42 --meko on    # the real Meko account: spends quota, so only when asked
 npm run knowledge    # regenerate knowledge/risk-rules.md after changing a rule
 npm run upload-knowledge   # knowledge/ → tripwire-patterns on the real Meko account (no search quota); after a doc changes
 npm run spike -- k9  # one week-1 check against the real Meko account: spends quota, so only when asked
