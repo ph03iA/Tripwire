@@ -76,3 +76,26 @@ test("replayed in order, no query ever sees the event being processed or a later
     await store.close();
   }
 });
+
+test("a refused event stays an attempt, but never counts as something that happened", async () => {
+  const store = await openStore();
+  try {
+    const mumbai = { ...client, geo: { country: "IN", city: "Mumbai" } };
+    const bangkok = { ip: "27.55.1.1", geo: { country: "TH", city: "Bangkok" }, deviceId: "dev_x", userAgent: "UA" };
+    await store.insert({ ...base("r1", 0), ...mumbai, kind: "login", success: true, method: "password" }, 0);
+    await store.insert({ ...base("r2", 10), ...bangkok, kind: "transaction", type: "payout", amountMinor: 6_000_000, currency: "INR", payeeId: "bnk",
+      payeeIsNew: true, status: "approved" }, 1);
+    await store.insert({ ...base("r3", 11), ...bangkok, kind: "transaction", type: "card_charge", amountMinor: 100, currency: "INR", merchantId: "m1",
+      status: "approved" }, 2);
+    await store.insert({ ...base("r4", 12), ...bangkok, kind: "password_reset", channel: "support" }, 3);
+    for (const id of ["r2", "r3", "r4"]) await store.markRefused(id);
+    assert.equal((await store.lastActivity("acc_1"))?.city, "Mumbai", "the refused payout didn't move the customer");
+    assert.equal(await store.deviceSeenOnAccount("acc_1", "dev_x"), false, "the refused device never got in");
+    assert.deepEqual(await store.medianAmount("acc_1"), { median: null, count: 0 }, "nothing was paid");
+    assert.equal(await store.resetSince("acc_1", at(0)), false, "the password wasn't reset");
+    assert.deepEqual(await store.smallCharges("acc_1", at(0)), { count: 1, merchants: ["m1"] }, "but a refused charge was still tried");
+    assert.equal(await store.otherAccountsOnDevice("dev_x", "acc_2", at(0)), 1, "and the device was still used against the account");
+  } finally {
+    await store.close();
+  }
+});

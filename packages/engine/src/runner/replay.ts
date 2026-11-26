@@ -135,13 +135,19 @@ const rulesOf = (v: Verdict) =>
 /** A BLOCK stops. A STEP-UP sends a code to the registered phone; the runner answers for whoever holds it (R3). */
 async function settle(e: TripwireEvent, action: Action, w: World): Promise<Outcome> {
   if (action === "ALLOW") return "allowed";
-  if (action === "BLOCK") return w.locks.stop(e), "blocked";
+  if (action === "BLOCK") return stop(e, w, "blocked");
   const result: StepUpResultEvent = { id: `${e.id}-otp`, ts: e.ts, accountId: e.accountId, kind: "step_up_result", passed: otpPasses(w.label(e.id)) };
   await w.store.insert(result, w.seq++);
   w.record.stepUps.push(result);
   if (result.passed) return w.locks.verify(e), "passed";
+  return stop(e, w, "failed");
+}
+
+/** A stopped event never went through: its device is locked out (R2), and history no longer counts it as done. */
+async function stop(e: TripwireEvent, w: World, outcome: "blocked" | "failed"): Promise<Outcome> {
   w.locks.stop(e);
-  return "failed";
+  await w.store.markRefused(e.id);
+  return outcome;
 }
 
 /** Events that never went through: refused after a stop, blocked, or stopped at their step-up. */

@@ -64,6 +64,7 @@ test("OFF: every chain is stopped where the design's OFF column expects, with no
     { s1: 4, s2: 3, s3: 2, "s4-1": null, "s4-2": null, "s4-3": null, "s4-4": null, "s4-5": null, s5: 4 });
   assert.equal(metrics!.caughtEarly, 1, "only s2, at its login");
   assert.equal(metrics!.legitBlocks, 0);
+  assert.equal(metrics!.legitSensitiveBlocks, 0);
   assert.equal(metrics!.legitRefused, 0);
 });
 
@@ -145,4 +146,20 @@ test("a failed step-up stops the attacker: their device is refused everywhere, a
   assert.deepEqual(record.denied.map((d) => [d.eventId, d.rule, d.stopEventId]), [["l1", "lock.device", "p1"], ["p2", "lock.unverified-device", "p1"]]);
   assert.deepEqual(record.stepUps.map((s) => [s.id, s.passed]), [["z1-otp", true], ["p1-otp", false], ["p3-otp", true]]);
   assert.equal(record.events, stream.length);
+});
+
+test("a payout stopped at its step-up doesn't become the owner's last location (review finding 2)", async () => {
+  // Regression: the owner's next login at home scored "Bangkok to Mumbai would need 3002 km/h" and got a STEP-UP.
+  const mumbai = accounts.find((a) => a.home.city === "Mumbai")!;
+  const home = { ip: "49.36.1.1", geo: mumbai.home, deviceId: mumbai.knownDevices[0]!.id, userAgent: mumbai.knownDevices[0]!.userAgent };
+  const stream = [
+    { ...home, id: "h1", ts: "2026-11-03T04:00:00.000Z", accountId: mumbai.id, kind: "login", success: true, method: "password" },
+    { id: "x1", ts: "2026-11-03T05:00:00.000Z", accountId: mumbai.id, ip: "27.55.1.1", geo: { country: "TH", city: "Bangkok" }, deviceId: "dev_thief",
+      userAgent: "ua", kind: "transaction", type: "payout", amountMinor: 6_000_000, currency: "INR", payeeId: "bnk_new", payeeIsNew: true, status: "approved" },
+    { ...home, id: "h2", ts: "2026-11-03T06:00:00.000Z", accountId: mumbai.id, kind: "login", success: true, method: "password" },
+  ] as TripwireEvent[];
+  const record = await replayStream({ seed: 0, events: stream, labels: legit(stream, ["x1"]), accounts: [mumbai] });
+  assert.equal(record.error, undefined);
+  assert.deepEqual(record.decisions.map((d) => [d.eventId, d.action, d.outcome]), [["x1", "STEP_UP", "failed"]], "no decision on the owner's login");
+  assert.deepEqual(record.findings.filter((f) => f.eventId === "h2").map((f) => f.ruleId), []);
 });
