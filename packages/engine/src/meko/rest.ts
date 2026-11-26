@@ -48,6 +48,18 @@ async function unwrap<T>(res: Response, what: string): Promise<T> {
 
 const isEnvelope = (x: unknown): x is Envelope => typeof x === "object" && x !== null && ("data" in x || "error" in x);
 
+/**
+ * A datapack's ID, by its exact name (names are unique per account). Never creates one: the Free plan allows 10 ever,
+ * so a new datapack is made by hand, with the owner's OK. The answer names the owner, so it's never echoed.
+ */
+export async function findDatapack(rest: Rest, name: string): Promise<string> {
+  const page = await rest.request<{ items?: unknown }>("GET", `datapacks?name=${encodeURIComponent(name)}&limit=1`, "read");
+  if (!Array.isArray(page?.items)) throw new Error("GET /datapacks: unexpected answer");
+  const id = (page.items as { datapack_id?: unknown; datapack_name?: unknown }[]).find((d) => d?.datapack_name === name)?.datapack_id;
+  if (typeof id !== "string") throw new Error(`the ${name} datapack doesn't exist: create it by hand, since each one uses one of the 10 lifetime slots`);
+  return id;
+}
+
 function parseJson(text: string): unknown {
   try {
     return JSON.parse(text);

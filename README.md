@@ -32,8 +32,9 @@ At most 2,000 events over 14 days from 150 accounts, plus `accounts.json`: what 
 ```bash
 npm run replay -- --seed 42 --meko off   # replays the stream through the four agents → runs/<run id>.json
 npm run knowledge                        # regenerates knowledge/risk-rules.md after a rule changes
+npm run upload-knowledge                 # uploads knowledge/ into the tripwire-patterns datapack; needs MEKO_API_KEY
 ```
-OFF mode needs no account and makes no network calls. ON mode, with shared Meko memory, arrives in milestone M2.
+OFF mode needs no account and makes no network calls. ON mode, with shared Meko memory, arrives in milestone M2. The upload sends only files whose bytes changed, and spends no search quota.
 
 ## Check Meko
 ```bash
