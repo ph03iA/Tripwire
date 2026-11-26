@@ -31,10 +31,13 @@ export const noisyOr = (scores: number[]) => Math.round((1 - scores.reduce((p, s
 /** Signals an agent can see for an event: its own in OFF mode, everyone's in ON mode. */
 export type Recall = (agent: AgentName, e: TripwireEvent) => Promise<RiskSignal[]>;
 
-/** One agent, one event: the base rules, then, if they look risky enough, recall and the context rules. */
+/**
+ * One agent, one event: the base rules, then, if they look risky enough, recall and the context rules. Recalled
+ * signals only feed context rules, so an agent without any never recalls: in ON mode that's a Meko search saved.
+ */
 export async function detect(agent: Agent, e: TripwireEvent, ctx: AgentContext, recall: Recall): Promise<Finding[]> {
   const findings = await runRules(agent.rules, e, ctx);
-  if (noisyOr(findings.map((f) => f.score)) < RECALL_AT) return findings;
+  if (agent.contextRules.length === 0 || noisyOr(findings.map((f) => f.score)) < RECALL_AT) return findings;
   return [...findings, ...runContextRules(agent.contextRules, e, await recall(agent.name, e))];
 }
 

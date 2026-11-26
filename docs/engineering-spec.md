@@ -114,7 +114,7 @@ type AgentContext = { history: History; profile(accountId: string): AccountProfi
 
 **Pipeline, per agent, per event:**
 1. Run the base rules (history and profile only).
-2. If the noisy-OR of the findings is ≥ 0.2, recall signals for the account and the event's device, IP and payee. In OFF mode that is only this agent's own signals; in ON mode it is everyone's, through Meko. Then run the context rules against them.
+2. If the noisy-OR of the findings is ≥ 0.2 and the agent has a context rule, recall signals for the account and the event's device, IP and payee. In OFF mode that is only this agent's own signals; in ON mode it is everyone's, through Meko. Then run the context rules against them. Recalled signals feed nothing else, so an agent without a context rule never recalls: in ON mode each recall is a Meko search. Today only the support agent has one.
 3. Keep every finding in the run record. Write a signal for each finding with score ≥ 0.4.
 
 `noisyOr(scores) = 1 − Π(1 − sᵢ)`.
@@ -151,25 +151,33 @@ Impossible travel compares successful activity only: failed attempts come from r
 
 ```ts
 replay(seed): Promise<RunRecord>                                  // OFF mode; ON arrives in M2
-replayStream({ seed, events, accounts }): Promise<RunRecord>      // the same loop on any input, used by tests
+replayStream({ seed, events, labels, accounts }): Promise<RunRecord>  // the same loop on any input, used by tests
 ```
 
 1. `generate(seed)` builds the events, labels and profiles in process. The runner never parses the committed files, so there is no file trust boundary to validate.
 2. Open the store. Build the profile lookup and the browser-string shares. Create one `LocalSignalStore` per agent (OFF mode).
-3. For each event in order: route it, run each agent's pipeline, write its signals, then insert the event.
-4. Return and save the run record:
+3. For each event in order:
+   1. If an earlier stop refuses it (R2, below), record the denial and move on: no agent sees it and it isn't stored.
+   2. Route it, run each agent's pipeline, insert the event, then write its signals.
+   3. If it triggers a decision (C1), run the decision agent and apply the outcome: a BLOCK stops; a STEP-UP gets a `step_up_result` event (`<event id>-otp`, same time), which is stored, and a failed one stops.
+4. Score the run against the labels (`metrics.ts`, PRD §8), from what the runner refused.
+5. Return and save the run record:
    ```ts
    type RunRecord = {
      runId: string; seed: number; meko: "off" | "on"; status: "ok" | "failed"; error?: string;
-     startedAt: string; finishedAt: string; events: number;
+     startedAt: string; finishedAt: string; events: number;          // stored or refused
      findings: (Finding & { agent: AgentName; eventId: string })[];  // every finding, written or not
      signals: RiskSignal[];                                           // the written ones (score ≥ 0.4)
+     decisions: Decision[];    // trigger, action, risk, the signals and rules used, reasoning, outcome, latency
+     denied: Denial[];         // events refused after a stop, with the rule and the stop
+     stepUps: StepUpResultEvent[];
+     metrics?: Metrics;        // per chain, false positives, friction, loss prevented; only on a run that finished
    };
    ```
    `runId` = `<seed>-<mode>-<ISO time>`. Records go to `runs/<runId>.json` (git-ignored; demo runs get committed in M6).
 
 **Failure policy:**
-- **Input is validated before anything is scored.** Timestamps must parse and never go backwards; equal times keep their input order. Every account needs a profile.
+- **Input is validated before anything is scored.** Timestamps must parse and never go backwards; equal times keep their input order. Every account needs a profile, and every event a label (the runner answers step-ups from them).
 - **Results are published only after the event is stored.** An event's findings and signals are staged, the event is stored, and only then do they reach the record and the signal store. A failed insert therefore leaves nothing from that event behind.
 - **Any error stops the run.** That includes opening or closing the store. A record with `status: "failed"` and the first error is still written.
 - **No silent fallback.** A run never falls back from ON to OFF, because that would corrupt the comparison.
@@ -214,16 +222,18 @@ These are fixed now so that earlier code doesn't box them in; each lands in its 
 
   Every search becomes a `Retrieval` record (C3).
 - **Hygiene (M2, R5, R8):** an ON run starts by deleting every memory of the four detection agents and of `tripwire:decision` in its datapack (`memory_delete_all` per agent, repeated until `complete`). Meko extracts a memory from each trace or ledger turn's user input within about 30 s, under the conversation's agent ID (K6), and a retried call can be extracted again (K10). So the run ends by waiting at least 60 s after its last conversation call, retries included, and then deleting `tripwire:decision`'s memories again. The R8 audit lists them once more after that delete, so a late extraction can't slip past it. The decision agent writes turns but never writes memories of its own.
-- **Decision agent (M2):**
-  - Triggers per C1. Risk is the noisy-OR of the strongest signal per type in 72 h.
-  - Policy: ≥ 0.8 BLOCK, 0.5–0.8 STEP-UP, else ALLOW. A known device plus travel alone is capped at STEP-UP.
-  - The reason is a template over the decision record, so nothing is generated text.
+- **Decision agent (M2, `agents/decision.ts`, pure):**
+  - Triggers per C1: every account change (email, phone, password, payout method, 2FA), password reset, transfer and payout, a card charge of ₹10,000 or more, and any event with a signal ≥ 0.7. Everything else is allowed without review, with a one-line reason.
+  - It sees the signals its mode allows, through the same `SignalStore`: in OFF mode only the owning agent's, earlier and on the event itself; in ON mode everyone's. Earlier ones are already filtered to the same account, device, IP or payee within 72 h.
+  - Risk is the noisy-OR of the strongest signal per type. A tie goes to the newer signal, then the lower event ID, so the input order never changes a decision.
+  - Policy: ≥ 0.8 BLOCK, 0.5–0.8 STEP-UP, else ALLOW. A known device plus travel alone is capped at STEP-UP: a BLOCK whose only signals are impossible travel, on a device in the profile. `knowledge/step-up-policy.md` states the same numbers, and a test checks it.
+  - The reason is a template over the decision record, so nothing is generated text. `rulesApplied` lists the rules behind the signals used, then the policy rule (`policy.block`, `policy.step-up`, `policy.allow` or `policy.travel-cap`).
   - **Traces:**
     - Each STEP-UP and BLOCK gets its own trace turn (C4).
     - Every ALLOW, with or without signals, goes into the daily allow ledger with its reason, signals and searches (C5).
     - Seed 42 has 275 decision triggers, 90 of them with a shared signal on the event itself. One turn per signal-backed ALLOW wouldn't fit the 120-call ceiling, while STEP-UPs and BLOCKs should number in the tens.
 - **Dry run (M2, before the first ON run):** `--meko dry` runs the whole ON pipeline against an in-process stand-in for Meko and reports the conversation calls and searches the run would make. The quota guard and the PRD §9 ceiling are checked against these measured numbers, not estimates.
-- **Outcomes (M2):** R2 and R3. The runner decides OTP outcomes from the labels, and records attempted versus executed takeover events. Prevention is computed from execution (PRD §8).
+- **Outcomes (M2, `runner/outcomes.ts`):** R2 and R3. The runner answers a step-up from the labels: the owner passes and an attacker fails. A stop (a BLOCK or a failed step-up) locks the device that triggered it on every account (`lock.device`). It also makes the account refuse payments, password resets and account changes from any device outside its profile that hasn't passed a step-up on it (`lock.unverified-device`): that is the "verified history". A refused event is never scored or stored, since the app turns it away at the door. Prevention is computed from what the runner refused (PRD §8): a chain is prevented when its takeover event was refused, and stopped at the phase of its first refused event.
 - **Quota guard (M2):** `runs/quota.json` keeps a per-month ledger of conversation calls, memory searches and KB searches, the three counters Meko caps on the Free plan (K8). An ON run refuses to start when its ceiling (PRD §9) doesn't fit the remainder.
 - **Learning loop (M3):** L1–L4 exactly as the PRD states. Each pattern gets its own approval conversation, a `memory_add` linked to it, `memory_promote`, and confirmation in the promoted list (K4). Patterns are found with `knowledgebase_search`; a hit with `metadata_filters.source: "memory"` is a learned pattern, and anything else is a playbook passage (K3). A promoted pattern can't be deleted (K7), so each evaluation run starts from a fresh patterns datapack (R5).
 
@@ -233,8 +243,9 @@ These are fixed now so that earlier code doesn't box them in; each lands in its 
 | --- | --- | --- |
 | Unit | Each rule, positive and negative, against a PGlite store seeded with a few events | `agents/*.test.ts` |
 | Unit | Store queries, including the no-future-data property | `store/store.test.ts` |
-| Unit | `noisyOr`, routing, risk-rules rendering matches the committed file | `agents/index.test.ts`, `knowledge/render.test.ts` |
-| Integration | OFF replay of seed 42: completes, writes the planted scenarios' expected signals, writes no signal from ground truth | `runner/replay.test.ts` |
+| Unit | `noisyOr`, routing, risk-rules rendering matches the committed file, the step-up policy states the code's thresholds | `agents/agents.test.ts`, `knowledge/render.test.ts` |
+| Unit | Decision triggers, policy, travel cap, tie-breaking, reasoning; metrics from refusals | `agents/decision.test.ts`, `metrics.test.ts` |
+| Integration | OFF replay of seed 42: completes, writes the planted scenarios' expected signals, stops each chain where the design's OFF column expects; locks and step-ups on a hand-built stream | `runner/replay.test.ts` |
 | Generator | Determinism, size, chains, no attack-only values, traveler fixture, CLI | `generator/generate.test.ts` (done) |
 | Live (later) | ON mode against real Meko, opt-in with `TRIPWIRE_LIVE=1`. Never in CI: it needs secrets and spends quota. | `*.live.test.ts` |
 

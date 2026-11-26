@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { formatMetrics } from "../metrics.js";
 import { replay } from "./replay.js";
 
 const { values } = parseArgs({
@@ -24,6 +25,10 @@ const byType = new Map<string, number>();
 for (const s of record.signals) byType.set(`${s.agent}/${s.type}`, (byType.get(`${s.agent}/${s.type}`) ?? 0) + 1);
 console.log(`${record.status}: ${record.events} events, ${record.findings.length} findings, ${record.signals.length} signals → ${file}`);
 for (const [type, n] of [...byType].sort()) console.log(`  ${type.padEnd(36)} ${n}`);
+const actions = record.decisions.map((d) => d.action);
+console.log(`${record.decisions.length} decisions (${["BLOCK", "STEP_UP", "ALLOW"].map((a) => `${a} ${actions.filter((x) => x === a).length}`).join(", ")}), `
+  + `refused after a stop: ${record.denied.length}`);
+if (record.metrics) console.log(formatMetrics(record.metrics));
 if (record.status === "failed") {
   console.error(`run failed: ${record.error}`);
   process.exit(1);
