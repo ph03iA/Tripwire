@@ -25,7 +25,10 @@ const AGENT = {
   analyst: "tripwire:analyst",
 };
 const RETRIEVALS = ["memory_search", "knowledgebase_search", "context_search"];
-/** Meko echoes the account owner's name and email in some answers; they never reach a saved file or the console. */
+/**
+ * Meko echoes the account owner's name and email in some answers; they never reach a saved file or the console. `scrub`
+ * removes them from saved answers, so error messages only describe an answer's shape: a string can't be scrubbed.
+ */
 const PRIVATE = new Set(["user_id", "user_name", "user_email", "datapack_owner_name", "datapack_owner_email_id", "promoted_by_name",
   "promoted_by_email", "uploaded_by_email"]);
 
@@ -73,7 +76,7 @@ function idsIn(x: unknown, keys = ["id", "memory_id", "conversation_id"]): strin
 async function conversation(ctx: Ctx, title: string, agentId: string): Promise<string> {
   const out = await call(ctx, "conversation_create", { title: `tripwire spike: ${title}`, agent_id: agentId }, "write-once");
   const id = idsIn(out)[0];
-  if (!id) throw new Error(`conversation_create: no id in ${JSON.stringify(out).slice(0, 300)}`);
+  if (!id) throw new Error("conversation_create: the answer has no conversation id");
   return id;
 }
 
@@ -104,7 +107,7 @@ async function everyMemory(ctx: Ctx, conversationId: string): Promise<Row[]> {
   const rows: Row[] = [];
   for (let page = 1; ; page++) {
     const out = await call(ctx, "memory_get_all", { conversation_id: conversationId, page, page_size: 100 });
-    if (!isPage(out)) throw new Error(`memory_get_all: unexpected answer ${JSON.stringify(out).slice(0, 200)}`);
+    if (!isPage(out)) throw new Error("memory_get_all: the answer has no memories list or no total_pages");
     rows.push(...out.memories);
     if (page >= out.total_pages) return rows;
   }
@@ -158,7 +161,7 @@ async function k4(ctx: Ctx) {
   const text = `Approved fraud pattern ${marker}: card-testing ring. Many charges under 100 rupees at different merchants from one device within an hour, followed by a large payout to a new payee.`;
   const added = await call(ctx, "memory_add", signal(AGENT.analyst, approval, text, { kind: "pattern", marker }), "write-once");
   const id = idsIn(added, ["id"])[0];
-  if (!id) throw new Error(`memory_add: no id in ${JSON.stringify(added).slice(0, 300)}`);
+  if (!id) throw new Error("memory_add: the answer has no memory id");
   const promote = () => call(ctx, "memory_promote", { conversation_id: approval, agent_id: AGENT.analyst, memory_ids: [id] }, "write-once");
   const listed = async () => mentions(await call(ctx, "memory_get_all", { conversation_id: approval, promoted: true, page_size: 100 }), id);
   const attempts = [];
@@ -251,7 +254,7 @@ async function k10(ctx: Ctx) {
   const session = { title: "tripwire spike: k10 allow ledger", agent_id: AGENT.decision, session_id: `k10-${tag()}` };
   const created = [await call(ctx, "conversation_create", session, "write-once"), await call(ctx, "conversation_create", session, "write-once")];
   const ledger = idsIn(created[0])[0];
-  if (!ledger) throw new Error(`conversation_create: no id in ${JSON.stringify(created[0]).slice(0, 300)}`);
+  if (!ledger) throw new Error("conversation_create: the answer has no conversation id");
   const lines = Array.from({ length: 150 }, (_, i) => {
     const time = `2026-11-01T${String(8 + Math.floor(i / 12)).padStart(2, "0")}:${String((i * 5) % 60).padStart(2, "0")}`;
     return `${time} ALLOW evt_${String(i).padStart(5, "0")} acct_${String(i % 40).padStart(3, "0")} login risk 0.${i % 5} signals: ${i % 3 ? "none" : "login.new-ip (0.2)"} searches: ${i % 4}`;
@@ -346,7 +349,7 @@ const isDatapacks = (x: unknown): x is Datapack[] =>
 
 async function datapacks(rest: Rest): Promise<Datapack[]> {
   const list = await rest.request<unknown>("GET", "datapacks", "read");
-  if (!isDatapacks(list)) throw new Error(`GET /datapacks: unexpected answer ${JSON.stringify(list, scrub).slice(0, 200)}`);
+  if (!isDatapacks(list)) throw new Error("GET /datapacks: the answer isn't a list of datapacks with ids and names");
   return list;
 }
 
