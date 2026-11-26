@@ -8,6 +8,7 @@
     "upload-knowledge": "tsx src/knowledge/upload-cli.ts",
     "replay": "tsx src/runner/cli.ts",
     "spike": "tsx src/meko/spike.ts",
+    "llm-check": "tsx src/llm/check-cli.ts",
     "test": "tsx --test \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"
   },

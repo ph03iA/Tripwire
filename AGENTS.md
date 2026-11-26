@@ -34,6 +34,7 @@ npm run replay -- --seed 42 --meko on    # the real Meko account: spends quota, 
 npm run knowledge    # regenerate knowledge/risk-rules.md after changing a rule
 npm run upload-knowledge   # knowledge/ → tripwire-patterns on the real Meko account (no search quota); after a doc changes
 npm run spike -- k9  # one week-1 check against the real Meko account: spends quota, so only when asked
+npm run llm-check    # the same test calls to each Groq and Gemini candidate model (needs GROQ_API_KEY, GEMINI_API_KEY): free-tier quota, so only when asked
 npm test
 npm run typecheck
 npm run lint         # ESLint; fails on any function with cyclomatic complexity over 10
