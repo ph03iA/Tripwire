@@ -39,7 +39,7 @@ Nothing on this list calls an LLM (see the PRD's decision). Every decision is de
 
 Datapacks:
 - `signals`: signals, case conversations and the allow ledger. Cleared at the start of every ON run. Each run writes its signals under its own run conversation and recalls them with `run_id`, so runs never mix (K2).
-- `patterns`: playbooks, rules, policy, and approved patterns, which are its only memories. A promoted pattern can't be deleted (K7), so each evaluation run gets a fresh `patterns` datapack.
+- `patterns`: playbooks, rules, policy, and approved patterns, which are its only memories. A promoted pattern can't be deleted through the API (K7), so each evaluation run gets a fresh `patterns` datapack.
 
 The brief asks for these two to stay separate. With a fresh `patterns` datapack for each evaluation run, they use all 10 of the Free plan's datapacks: see the [budget](spikes.md#datapacks-budget).
 
@@ -170,4 +170,4 @@ Background traffic also mixes in runs of 2–3 failed logins, KBA support calls,
 
 ## Week-1 checks
 
-The unknowns (K1–K11) and how each is tested are in the [build plan](plan.md#week-1-checks). The answers, measured against Meko on 2026-11-23, are in [spikes](spikes.md).
+The unknowns (K1–K11) and how each is tested are in the [build plan](plan.md#week-1-checks). The answers, measured against Meko on 2026-11-23 to 26, are in [spikes](spikes.md). One shapes the trace walkthroughs (K11): a case's searches show in the Observe view of the datapack each ran in, under the case's ID. So a walkthrough shows the case in `signals` and its pattern searches in `patterns`.
