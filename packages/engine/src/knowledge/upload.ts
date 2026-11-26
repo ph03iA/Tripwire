@@ -43,14 +43,19 @@ export async function uploadFile(rest: Rest, datapackId: string, path: string, {
   return ticket.already_uploaded ? "unchanged" : "uploaded";
 }
 
-/** Every document with exactly this name; Meko's `q` matches any part of a name. */
+/**
+ * Every document stored under this file name. Meko's docs show `document_name` as the bare name, but the live API
+ * answers with the whole storage key, `<owner>/<datapack>/<sha256>/<name>` (2026-11-26), so both forms match.
+ * `q` matches any part of a name, so `policy.md.bak` comes back for `policy.md` and is left out here.
+ */
 async function documentsNamed(rest: Rest, kb: string, filename: string): Promise<Doc[]> {
   const docs: Doc[] = [];
+  const isThisFile = (name: unknown) => name === filename || (typeof name === "string" && name.endsWith(`/${filename}`));
   for (let page = 1; ; page++) {
     const list = await rest.request<{ items?: unknown; has_more?: unknown }>("GET",
       `${kb}/documents?q=${encodeURIComponent(filename)}&page=${page}&page_size=200`, "read");
     if (!Array.isArray(list?.items)) throw new Error("GET /documents: unexpected answer");
-    docs.push(...(list.items as Doc[]).filter((d) => d?.document_name === filename && typeof d.id === "string"));
+    docs.push(...(list.items as Doc[]).filter((d) => isThisFile(d?.document_name) && typeof d.id === "string"));
     if (list.has_more !== true) return docs;
   }
 }
