@@ -26,7 +26,8 @@ const AGENT = {
 };
 const RETRIEVALS = ["memory_search", "knowledgebase_search", "context_search"];
 /** Meko echoes the account owner's name and email in some answers; they never reach a saved file or the console. */
-const PRIVATE = new Set(["user_id", "user_name", "user_email", "datapack_owner_name", "datapack_owner_email_id"]);
+const PRIVATE = new Set(["user_id", "user_name", "user_email", "datapack_owner_name", "datapack_owner_email_id", "promoted_by_name",
+  "promoted_by_email", "uploaded_by_email"]);
 
 type Call = { tool: string; args: Record<string, unknown>; ms: number; out?: unknown; error?: string };
 type Ctx = { cfg: MekoConfig; mcp: Mcp; rest: Rest; datapackId: string; calls: Call[] };
