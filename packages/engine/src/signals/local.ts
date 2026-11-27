@@ -1,4 +1,5 @@
 import { entitiesOf, type Recall } from "../agents/index.js";
+import { namesEntity } from "../agents/judgment.js";
 import type { AgentName, RiskSignal, TripwireEvent } from "../types.js";
 
 export const RECALL_WINDOW_MS = 72 * 3_600_000; // PRD C2: signals older than 72 h don't count
@@ -10,12 +11,19 @@ export type SignalStore = {
   forDecision(owner: AgentName, e: TripwireEvent): Promise<RiskSignal[]>;
   /** Whether that decision may use a signal on the event itself. */
   sees(owner: AgentName, s: RiskSignal): boolean;
+  /** need_more (M2.5): earlier signals naming the entity the decision agent asked about ("device:dev_1"); in OFF mode only the owner's. */
+  lookup(owner: AgentName, e: TripwireEvent, entity: string): Promise<RiskSignal[]>;
 };
+
+/** Written before the event and inside the recall window. */
+export function inWindow(s: RiskSignal, e: TripwireEvent): boolean {
+  const age = Date.parse(e.ts) - Date.parse(s.ts);
+  return age >= 0 && age <= RECALL_WINDOW_MS;
+}
 
 /** Same account, or a shared device, IP or payee, inside the recall window. ON mode (M2) applies the same test to Meko results. */
 export function isRelevant(s: RiskSignal, e: TripwireEvent): boolean {
-  const age = Date.parse(e.ts) - Date.parse(s.ts);
-  if (age < 0 || age > RECALL_WINDOW_MS) return false;
+  if (!inWindow(s, e)) return false;
   const ent = entitiesOf(e);
   return s.accountId === e.accountId || sharedValue(s.entities.deviceId, ent.deviceId) || sharedValue(s.entities.ip, ent.ip)
     || sharedValue(s.entities.payeeId, ent.payeeId);
@@ -36,5 +44,9 @@ export function localSignals(): SignalStore {
     recall,
     forDecision: async (owner, e) => (await recall(owner, e)).filter((s) => s.eventId !== e.id),
     sees: (owner, s) => s.agent === owner,
+    lookup: async (owner, e, entity) => {
+      const names = namesEntity(entity);
+      return names ? (byAgent.get(owner) ?? []).filter((s) => names(s) && inWindow(s, e)) : [];
+    },
   };
 }

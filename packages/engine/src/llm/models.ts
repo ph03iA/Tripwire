@@ -52,6 +52,13 @@ export const MODELS: ModelSpec[] = [
  */
 export const DETECTION_MODELS = ["gemini/3.5-flash-lite", "gemini/3.1-flash-lite", "groq/gpt-oss-20b"];
 
+/**
+ * The decision agent's models, in order. On llm-check's 7 decisions 3.1 Flash-Lite weighed context (a new device far
+ * from home, then an email change) and stopped every attack, while gpt-oss followed the thresholds like the rules.
+ * Seven decisions are thin evidence, so full runs re-measure it.
+ */
+export const DECISION_MODELS = ["gemini/3.1-flash-lite", "groq/gpt-oss-120b", "gemini/3.5-flash-lite"];
+
 export function modelNamed(name: string): ModelSpec {
   const model = MODELS.find((m) => m.name === name);
   if (!model) throw new Error(`no model named ${name}: the known ones are ${MODELS.map((m) => m.name).join(", ")}`);

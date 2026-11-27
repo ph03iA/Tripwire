@@ -3,8 +3,9 @@
 //   dry  the whole ON pipeline against an in-process stand-in for Meko: counts the calls a live run would make
 //   on   the real Meko account. It runs the dry pass first and refuses to start when that estimate, with headroom,
 //        breaks the per-run ceiling (PRD §9) or doesn't fit what's left of this month's quota (R7). Spends real quota.
-//   --agents llm  the detection agents' models also review every event, on top of the rules (M2.5). It counts the batch
-//        reviews first and refuses to start when today's free quota can't hold them. Spends Groq and Gemini free quota.
+//   --agents llm  the AI agents (M2.5): the detection agents' models also review every event, on top of the rules, and
+//        the decision agent's model decides within the guardrails. It counts the model calls first and refuses to start
+//        when today's free quota can't hold them. Spends Groq and Gemini free quota.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,7 +14,7 @@ import { mekoConfig } from "../config.js";
 import { generate } from "../generator/generate.js";
 import { logCall, usedToday } from "../llm/budget.js";
 import { llmClient } from "../llm/client.js";
-import { DETECTION_MODELS, modelNamed } from "../llm/models.js";
+import { DECISION_MODELS, DETECTION_MODELS, modelNamed, type ModelSpec } from "../llm/models.js";
 import { knowledgeDocuments, PATTERNS_DATAPACK } from "../knowledge/upload.js";
 import { dryDocuments, dryMeko } from "../meko/dry.js";
 import { connectMcp } from "../meko/mcp.js";
@@ -23,6 +24,7 @@ import { SIGNALS_DATAPACK } from "../signals/meko.js";
 import { lockDatapack } from "./lock.js";
 import { logUsage, overCeiling, overQuota, preflight, usageOf, usedThisMonth, withHeadroom } from "./quota.js";
 import { type AiRun, type MekoRun, replayStream, type RunRecord, type Stream } from "./replay.js";
+import { llmDecider, localKnowledge } from "./decider.js";
 import { llmReviewer, type Review, silentReviewer } from "./review.js";
 
 const { values } = parseArgs({
@@ -49,23 +51,29 @@ function dryMode(): MekoRun {
 }
 
 /**
- * The detection agents' models, after a check that today's free quota holds the run: a pass with a reviewer that calls
- * no model counts the batch reviews and their prompt sizes first.
+ * The AI agents' models, after a check that today's free quota holds the run: a pass that calls no model counts the
+ * batch reviews and the decisions with evidence first. A decision may take two calls (need_more), so it counts twice.
  */
 async function aiRun(stream: Stream): Promise<AiRun> {
-  const models = DETECTION_MODELS.map(modelNamed);
+  const detection = DETECTION_MODELS.map(modelNamed);
+  const deciding = DECISION_MODELS.map(modelNamed);
   const count = await replayStream(stream, undefined, { reviewer: silentReviewer });
-  const reviews = count.reviews ?? [];
-  const tokens = Math.ceil(reviews.reduce((n, r) => n + r.promptChars, 0) / 3);
-  const left = models.map((m) => ({ name: m.name, requests: m.limits.rpd - usedToday(m).requests }));
-  console.log(`AI agents: about ${reviews.length} batch reviews (about ${tokens} input tokens). Requests left today: ${left.map((m) => `${m.name} ${m.requests}`).join(", ")}`);
-  if (left.reduce((n, m) => n + Math.max(0, m.requests), 0) < reviews.length) {
-    console.error("refused: today's free quota across the detection models can't hold this run's batch reviews.");
+  const reviews = count.reviews?.length ?? 0;
+  const judgments = 2 * withEvidence(count);
+  const everyModel = [...new Set([...detection, ...deciding])];
+  console.log(`AI agents: about ${reviews} batch reviews and up to ${judgments} decision calls. `
+    + `Requests left today: ${everyModel.map((m) => `${m.name} ${requestsLeft([m])}`).join(", ")}`);
+  // shortcut: a model on both lists counts for each, so two short lists can each look sufficient; per-model accounting if that bites.
+  if (requestsLeft(detection) < reviews || requestsLeft(deciding) < judgments) {
+    console.error("refused: today's free quota can't hold this run's model calls.");
     process.exit(2);
   }
   const client = llmClient({ onCall: (entry) => logCall({ ...entry, source: `replay seed ${stream.seed}` }) });
-  return { reviewer: llmReviewer({ client, models }) };
+  return { reviewer: llmReviewer({ client, models: detection }), decider: llmDecider({ client, models: deciding, knowledge: localKnowledge() }) };
 }
+
+const requestsLeft = (models: ModelSpec[]) => models.reduce((n, m) => n + Math.max(0, m.limits.rpd - usedToday(m).requests), 0);
+const withEvidence = (r: RunRecord) => r.decisions.filter((d) => d.signalsUsed.length > 0).length;
 
 async function dryRun(stream: Stream, ai?: AiRun): Promise<RunRecord> {
   const dry = await replayStream(stream, dryMode(), ai);
@@ -81,7 +89,9 @@ async function dryRun(stream: Stream, ai?: AiRun): Promise<RunRecord> {
 async function liveRun(stream: Stream, ai?: AiRun): Promise<RunRecord> {
   const estimate = await replayStream(stream, dryMode(), ai && { reviewer: silentReviewer }); // counts Meko calls; spends no model quota
   if (estimate.status !== "ok") throw new Error(`the dry pass failed, so the live run didn't start: ${estimate.error}`);
-  const needed = withHeadroom(usageOf(estimate.mekoCalls ?? {}));
+  const usage = usageOf(estimate.mekoCalls ?? {});
+  if (ai?.decider) usage.memorySearches += withEvidence(estimate); // at most one need_more search per model decision
+  const needed = withHeadroom(usage);
   const refused = preflight(needed, usedThisMonth());
   if (refused.length) {
     console.error(`refused before connecting (R7, PRD §9): ${refused.join("; ")}.`);
@@ -145,6 +155,17 @@ function reportAi(r: RunRecord) {
     + `${r.reviews.reduce((n, x) => n + x.added, 0)} signals added; tokens ${tokens.input} in, ${tokens.output} out`);
   const fallbacks = r.reviews.filter((x) => x.fallback);
   if (fallbacks.length) console.log(`  ${fallbacks.length} batches kept the rules' signals only, e.g. ${fallbacks[0]!.fallback}`);
+  reportDecisions(r);
+}
+
+/** Who decided, how often the model's decision differs from the rules', and the guardrails and searches behind them. */
+function reportDecisions(r: RunRecord) {
+  const judged = r.decisions.filter((d) => d.decidedBy);
+  if (!judged.length) return;
+  const by = Object.fromEntries([...new Set(judged.map((d) => d.decidedBy!))].map((m) => [m, judged.filter((d) => d.decidedBy === m).length]));
+  const differ = judged.filter((d) => d.rules && d.rules.action !== d.action).length;
+  console.log(`AI decisions: by ${JSON.stringify(by)}; ${differ} differ from the rules; ${judged.filter((d) => d.guardrails?.length).length} with a guardrail `
+    + `or fallback; ${judged.filter((d) => d.needMore).length} asked for more evidence`);
 }
 
 /** The ON-only lines: the R8 audit, quotes that couldn't be found, and the Meko calls. */

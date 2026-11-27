@@ -1,10 +1,12 @@
 import { type Action, decide, triggerOf, type Trigger, type Verdict } from "../agents/decision.js";
 import { agentBatch, type AgentBatch, type Closer } from "../agents/batch.js";
+import { guarded } from "../agents/judgment.js";
 import { AGENTS, agentsFor, detect, OWNER, toSignals } from "../agents/index.js";
 import { aiSignals, type ReviewInput, reviewPrompt } from "../agents/review.js";
 import type { Agent, AgentContext, Finding } from "../agents/types.js";
 import { generate } from "../generator/generate.js";
 import type { Mcp } from "../meko/mcp.js";
+import type { TokenUsage } from "../llm/client.js";
 import type { Wait } from "../meko/retry.js";
 import { type Metrics, scoreRun } from "../metrics.js";
 import { isRelevant, localSignals, type SignalStore } from "../signals/local.js";
@@ -12,6 +14,7 @@ import { mekoSignals, type Retrieval } from "../signals/meko.js";
 import { openStore, type EventStore } from "../store/store.js";
 import type { AccountProfile, AgentName, Label, RiskSignal, StepUpResultEvent, TripwireEvent } from "../types.js";
 import { type Denial, type Locks, locks, otpPasses } from "./outcomes.js";
+import type { Decider } from "./decider.js";
 import type { Review, Reviewer } from "./review.js";
 import { type KnowledgeDocuments, noTrace, openTrace, type Quote, type Trace } from "./trace.js";
 
@@ -38,6 +41,13 @@ export type Decision = {
   conversationId?: string; // the account's case, which holds the trace turn (C4)
   outcome: Outcome;
   latencyMs: number; // wall time, searches included; reported only: no decision reads the clock
+  // llm mode (M2.5): who decided, what the rules alone decided, and every guardrail or fallback that shaped it.
+  decidedBy?: string; // the model, or "rules" when no model decided (the reason is in guardrails)
+  rules?: { action: Action; risk: number };
+  guardrails?: string[];
+  needMore?: { entity: string; found: number }; // the one extra search the model asked for, and how many signals it added
+  modelCalls?: number;
+  tokens?: TokenUsage;
 };
 
 export type RunRecord = {
@@ -90,7 +100,7 @@ type World = {
   ai?: AiWorld;
 };
 /** llm mode: how the detection agents' models are asked. */
-export type AiRun = { reviewer: Reviewer };
+export type AiRun = { reviewer: Reviewer; decider?: Decider };
 type AiWorld = AiRun & { batches: Map<string, AgentBatch>; uaShare: AgentContext["uaShare"] };
 export type Stream = { seed: number; events: TripwireEvent[]; labels: Label[]; accounts: AccountProfile[] };
 
@@ -255,19 +265,43 @@ async function review(e: TripwireEvent, onEvent: RiskSignal[], w: World, batchAd
   const trigger = owner && triggerOf(e, visible);
   if (!owner || !trigger) return w.trace.ledger(e.ts, ledgerLine(e, "ALLOW unreviewed", onEvent, w.trace.retrievalsFor(e.id)));
   const t0 = performance.now();
-  const verdict = decide(e, await decisionSignals(e, owner, visible, batchAdded, w), w.ctx.profile(e.accountId));
+  const { verdict, how } = await judge(e, owner, await decisionSignals(e, owner, visible, batchAdded, w), w);
   const { quotes, missing } = verdict.action === "ALLOW" ? { quotes: [], missing: [] } : await w.trace.quotes(e, verdict);
   const latencyMs = Math.round(performance.now() - t0);
   const outcome = await settle(e, verdict.action, w);
   const decision: Decision = { eventId: e.id, accountId: e.accountId, ts: e.ts, trigger, action: verdict.action, risk: verdict.risk,
     capped: verdict.capped, signalsUsed: verdict.used.map((s) => `${s.eventId}/${s.ruleId}`), rulesApplied: rulesOf(verdict),
     reasoning: verdict.reasoning, quotes, ...(missing.length ? { missingQuotes: missing } : {}), retrievals: w.trace.retrievalsFor(e.id),
-    conversationId: w.trace.caseOf(e.accountId), outcome, latencyMs };
+    conversationId: w.trace.caseOf(e.accountId), outcome, latencyMs, ...how };
   w.record.decisions.push(decision);
   if (decision.action === "ALLOW") {
     return w.trace.ledger(e.ts, ledgerLine(e, `ALLOW reviewed (${trigger}), risk ${verdict.risk.toFixed(2)}`, verdict.used, decision.retrievals));
   }
-  await w.trace.flagged({ eventId: e.id, action: decision.action, outcome, reasoning: decision.reasoning, record: decision }, e.accountId);
+  await w.trace.flagged({ eventId: e.id, action: decision.action, outcome, reasoning: decision.reasoning, record: decision,
+    ...weighedBy(how) }, e.accountId);
+}
+
+/** The model that decided, for the trace turn's plan; nothing when the rules did. */
+const weighedBy = (how: How) => (how.decidedBy && how.decidedBy !== "rules" ? { weighedBy: how.decidedBy } : {});
+
+type How = Pick<Decision, "decidedBy" | "rules" | "guardrails" | "needMore" | "modelCalls" | "tokens">;
+
+/**
+ * Rules mode: the rules decide (C2). llm mode: the decision agent's model decides within the guardrails, and the
+ * rules decide when there's no evidence to weigh or no model gave a valid answer. Either way the record keeps the
+ * rules' own decision beside it.
+ */
+async function judge(e: TripwireEvent, owner: AgentName, signals: RiskSignal[], w: World): Promise<{ verdict: Verdict; how: How }> {
+  const profile = w.ctx.profile(e.accountId);
+  const rules = decide(e, signals, profile);
+  if (!w.ai?.decider) return { verdict: rules, how: {} };
+  const base: How = { rules: { action: rules.action, risk: rules.risk } };
+  if (signals.length === 0) return { verdict: rules, how: { ...base, decidedBy: "rules", guardrails: ["no evidence: allowed without a model call"] } };
+  const r = await w.ai.decider({ event: e, signals, profile }, (entity) => w.signals.lookup(owner, e, entity));
+  const asked: How = { ...base, modelCalls: r.calls, ...(r.tokens && { tokens: r.tokens }), ...(r.needMore && { needMore: r.needMore }) };
+  if (!r.judgment) return { verdict: rules, how: { ...asked, decidedBy: "rules", guardrails: [r.fallback ?? "no judgment"] } };
+  const verdict = guarded(r.judgment, e, r.signals, profile);
+  return { verdict, how: { ...asked, decidedBy: r.model, ...(verdict.cap && { guardrails: [`${r.judgment.action} lowered to STEP-UP: policy.${verdict.cap}-cap`] }) } };
 }
 
 /**

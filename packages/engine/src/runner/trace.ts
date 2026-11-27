@@ -28,7 +28,7 @@ const FLAGGED_INPUT = "Explain the flagged decision recorded in this turn.";
 const LEDGER_INPUT = "File the allow ledger recorded in this turn.";
 
 /** What a decision's trace turn holds: the decision record, with its reasoning and plan sent alongside (PRD C4). */
-export type TraceTurn = { eventId: string; action: "STEP_UP" | "BLOCK"; outcome: string; reasoning: string; record: unknown };
+export type TraceTurn = { eventId: string; action: "STEP_UP" | "BLOCK"; outcome: string; reasoning: string; record: unknown; weighedBy?: string };
 
 /** What the runner needs from Meko besides signals. OFF mode gets `noTrace`, which makes no calls at all. */
 export type Trace = {
@@ -209,7 +209,8 @@ export async function openTrace(o: TraceOptions): Promise<Trace> {
       await addTurn({ conversation_id: await caseFor(accountId), agent_id: DECISION, input: FLAGGED_INPUT,
         output: `${header}\n${JSON.stringify(turn.record, null, 1)}`, reasoning: turn.reasoning,
         plan: ["Recall the signals on the account, its device, IP and payee from the last 72 hours",
-          "Combine the strongest signal of each type as a noisy-OR", PLAN[turn.action], `Outcome: ${turn.outcome}`],
+          turn.weighedBy ? `Ask ${turn.weighedBy} to weigh them against the step-up policy and playbooks, within the guardrails`
+            : "Combine the strongest signal of each type as a noisy-OR", PLAN[turn.action], `Outcome: ${turn.outcome}`],
         seed: `${runId}:${turn.eventId}` }, header);
     },
     async ledger(ts, line) {

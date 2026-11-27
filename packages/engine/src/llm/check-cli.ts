@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Action } from "../agents/decision.js";
 import { ConfigError, llmKey } from "../config.js";
+import { localKnowledge } from "../runner/decider.js";
 import { logCall, overBudget, usedToday } from "./budget.js";
 import { type BatchSample, checkBatch, checkDecision, type DecisionSample, type Prompt, promptFor, type Sample, samples } from "./check.js";
 import { type ChatAnswer, type LlmClient, llmClient, type TokenUsage } from "./client.js";
@@ -28,7 +29,8 @@ async function main() {
   const models = (argValue("--models")?.split(",") ?? MODELS.map((m) => m.name)).map(modelNamed);
   console.log("Building the test calls from a seed-42 OFF run…");
   const all = await samples(42);
-  const prompts = all.map(promptFor);
+  const knowledge = localKnowledge();
+  const prompts = all.map((s) => promptFor(s, knowledge));
   const needed = { requests: all.length, tokens: prompts.reduce((n, p) => n + estimate(p), 0) };
   console.log(`${all.length} calls per model (${all.filter((s) => s.kind === "batch").length} batch reviews), about ${needed.tokens} tokens each at most.`);
   const client = llmClient({ onCall: (entry) => logCall({ ...entry, source: "llm-check" }) });
