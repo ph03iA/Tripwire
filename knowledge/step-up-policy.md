@@ -15,6 +15,11 @@ Risk is the noisy-OR of the strongest signal of each type on the account, and on
 - **Known device, travel only.** When the only risk is impossible travel, on a device in the account's profile, the action is capped at STEP-UP. Real customers travel with their own phones, and a code to that phone settles it.
 - **The agents' models alone.** When only the signals the agents' models added put the risk at 0.8 or more, the action is capped at STEP-UP. A block needs the rules' own evidence; a step-up still stops an attacker, who can't enter the code.
 
+## Who decides
+
+- With the AI agents on, the decision agent's model weighs the signals against this policy and the playbooks, and must cite the signals it relies on. The caps above always apply to its answer.
+- When there are no signals to weigh, the event is allowed without asking the model. When the model can't give a valid answer, the rule above decides: noisy-OR, then the thresholds.
+
 ## When a decision runs
 
 - On every sensitive event: a change of email, phone, password, payout method or two-factor setting; a password reset; any transfer or payout; a card charge of ₹10,000 or more.

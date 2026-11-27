@@ -48,7 +48,7 @@ export const UNREVIEWED = `not reviewed: not a sensitive event, and no signal of
 export function decide(e: TripwireEvent, signals: RiskSignal[], profile: AccountProfile | undefined): Verdict {
   const used = strongestPerType(signals);
   const risk = noisyOr(used.map((s) => s.score));
-  const cap = actionFor(risk) === "BLOCK" ? capOf(e, signals, used, profile) : undefined;
+  const cap = actionFor(risk) === "BLOCK" ? capFor(e, signals, used, profile) : undefined;
   const action = cap ? "STEP_UP" : actionFor(risk);
   return { action, risk, used, capped: cap !== undefined, ...(cap ? { cap } : {}), reasoning: reasoningFor(e, action, risk, used, cap) };
 }
@@ -57,7 +57,7 @@ export function decide(e: TripwireEvent, signals: RiskSignal[], profile: Account
  * Travel alone on a device in the profile never blocks (C2). Nor does risk that reaches BLOCK only through signals the
  * agents' models added (M2.5): a block needs the rules' own evidence, while a step-up still stops an attacker (R3).
  */
-function capOf(e: TripwireEvent, signals: RiskSignal[], used: RiskSignal[], profile: AccountProfile | undefined): Cap | undefined {
+export function capFor(e: TripwireEvent, signals: RiskSignal[], used: RiskSignal[], profile: AccountProfile | undefined): Cap | undefined {
   if (isKnownDeviceTravel(e, used, profile)) return "travel";
   const rulesRisk = noisyOr(strongestPerType(signals.filter((s) => !isAiSignal(s))).map((s) => s.score));
   return rulesRisk < BLOCK_AT ? "ai" : undefined;
@@ -91,7 +91,7 @@ const POLICY: Record<Action, string> = {
 const LABEL: Record<Action, string> = { BLOCK: "BLOCK", STEP_UP: "STEP-UP", ALLOW: "ALLOW" };
 
 /** The plain-English "why": a template over the verdict, so nothing in it is generated text. */
-const CAP_REASON: Record<Cap, string> = {
+export const CAP_REASON: Record<Cap, string> = {
   travel: " The only risk is travel, on a device in the account's profile, so it's capped at STEP-UP.",
   ai: " Only the agents' models put it at BLOCK level, so it's capped at STEP-UP: a block needs the rules' own evidence.",
 };

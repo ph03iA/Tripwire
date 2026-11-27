@@ -2,7 +2,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { Mcp } from "../meko/mcp.js";
 import { UnknownOutcomeError, type Wait } from "../meko/retry.js";
 import type { AgentName, RiskSignal, TripwireEvent } from "../types.js";
-import { isRelevant, type SignalStore } from "./local.js";
+import { namesEntity } from "../agents/judgment.js";
+import { inWindow, isRelevant, type SignalStore } from "./local.js";
 
 export const SIGNALS_DATAPACK = "tripwire-signals";
 const SEARCH_LIMIT = 20;
@@ -96,6 +97,19 @@ export function mekoSignals(o: MekoSignalOptions): MekoSignalStore {
     return { retrieval, used, missing: missingFresh(e, new Set(returnedIds)) };
   }
 
+  /** need_more's one search, by the entity's words (signals name "device dev_1" and the like), filed under the case. */
+  async function entitySearch(e: TripwireEvent, entity: string): Promise<RiskSignal[]> {
+    const conversationId = await o.caseFor(e.accountId);
+    const query = entity.replace(":", " ");
+    const out = await mcp.call("memory_search", { datapack_id: datapackId, conversation_id: conversationId, agent_id: agentId("decision"), run_id: run,
+      query, limit: SEARCH_LIMIT }, "read");
+    const returnedIds = hitIds(out);
+    const found = returnedIds.flatMap((id) => (written.has(id) ? [written.get(id)!.signal] : []));
+    o.log({ eventId: e.id, agent: agentId("decision"), tool: "memory_search", datapack: SIGNALS_DATAPACK, conversationId, query, returnedIds,
+      usedIds: found.map((s) => s.memoryId!) });
+    return found;
+  }
+
   /** Signals this run wrote in the last 30 s that the event should see but the search didn't return: probably not indexed yet. */
   const missingFresh = (e: TripwireEvent, returned: Set<string>) =>
     [...written].filter(([id, w]) => !returned.has(id) && w.signal.eventId !== e.id && now() - w.at <= FRESH_MS && isRelevant(w.signal, e))
@@ -136,6 +150,10 @@ export function mekoSignals(o: MekoSignalOptions): MekoSignalStore {
     recall: shared,
     forDecision: async (_owner, e) => (await shared("decision", e)).filter((s) => s.eventId !== e.id),
     sees: () => true,
+    lookup: async (_owner, e, entity) => {
+      const names = namesEntity(entity);
+      return names ? (await entitySearch(e, entity)).filter((s) => names(s) && inWindow(s, e)) : [];
+    },
   };
 }
 

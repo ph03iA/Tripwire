@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AGENTS } from "../agents/index.js";
+import { AGENTS, OWNER } from "../agents/index.js";
 import type { ReviewInput } from "../agents/review.js";
 import { generate } from "../generator/generate.js";
+import { dryDocuments, dryMeko } from "../meko/dry.js";
 import { replayStream, type RunRecord } from "./replay.js";
+import type { Decider } from "./decider.js";
 import { type Reviewer, silentReviewer } from "./review.js";
 
 const stream = { seed: 42, ...generate(42) };
@@ -72,4 +74,68 @@ test("a model that only repeats the rules at lower scores adds nothing", async (
   const run = await replayStream(stream, undefined, { reviewer: echo });
   assert.deepEqual(decisions(run), decisions(rules));
   assert.equal(run.reviews!.reduce((n, r) => n + r.added, 0), 0);
+});
+
+const allowAll: Decider = async (input) => ({ judgment: { action: "ALLOW", risk: 0.1, cites: [], reasoning: "Looks like the owner.", needMore: "" },
+  signals: input.signals, model: "scripted", calls: 1 });
+
+test("AI decisions: the model decides wherever there is evidence, no evidence means no call, and the record keeps the rules' answer", async () => {
+  let calls = 0;
+  const counting: Decider = async (input, lookup) => (calls++, allowAll(input, lookup));
+  const run = await replayStream(stream, undefined, { reviewer: silentReviewer, decider: counting });
+  const byModel = run.decisions.filter((d) => d.decidedBy === "scripted");
+  assert.equal(calls, byModel.length);
+  assert.ok(run.decisions.every((d) => d.decidedBy === "scripted" || d.guardrails?.[0] === "no evidence: allowed without a model call"));
+  assert.ok(byModel.every((d) => d.action === "ALLOW" && d.reasoning === "Looks like the owner." && d.rules !== undefined));
+  assert.ok(byModel.some((d) => d.rules!.action !== "ALLOW"), "it overrode rules decisions");
+  assert.ok(run.metrics!.prevented < rules.metrics!.prevented, "allowing everything lets attacks through: the decision really is the model's");
+});
+
+test("a model BLOCK on the AI's signals alone becomes a STEP-UP, and the record says which guardrail", async () => {
+  const blockAll: Decider = async (input) => ({ judgment: { action: "BLOCK", risk: 0.95, cites: input.signals.map((s) => `${s.eventId}/${s.ruleId}`),
+    reasoning: "Block it.", needMore: "" }, signals: input.signals, model: "scripted", calls: 1 });
+  const run = await replayStream(stream, undefined, { reviewer: sprayFlagger, decider: blockAll });
+  const login = run.decisions.find((d) => d.eventId === "evt_000481")!;
+  assert.deepEqual([login.action, login.outcome, login.guardrails], ["STEP_UP", "failed", ["BLOCK lowered to STEP-UP: policy.ai-cap"]]);
+  assert.ok(run.decisions.some((d) => d.action === "BLOCK"), "where the rules' own signals reach 0.8, a model BLOCK stands");
+});
+
+test("bad answers leave every decision to the rules, with the reason recorded", async () => {
+  const broken: Decider = async (input) => ({ signals: input.signals, calls: 2, fallback: "invalid answer twice: no reasoning" });
+  const run = await replayStream(stream, undefined, { reviewer: silentReviewer, decider: broken });
+  assert.deepEqual(decisions(run), decisions(rules));
+  assert.ok(run.decisions.filter((d) => d.guardrails?.[0] !== "no evidence: allowed without a model call")
+    .every((d) => d.decidedBy === "rules" && d.guardrails?.[0] === "invalid answer twice: no reasoning"));
+});
+
+test("need_more in OFF mode searches only the owner agent's own signals, for the entity named", async () => {
+  const found: { entity: string; at: string; owner: string; signals: { agent: string; deviceId?: string; ts: string }[] }[] = [];
+  const asking: Decider = async (input, lookup) => {
+    if ("deviceId" in input.event) {
+      const entity = `device:${input.event.deviceId}`;
+      found.push({ entity, at: input.event.ts, owner: OWNER[input.event.kind]!,
+        signals: (await lookup(entity)).map((s) => ({ agent: s.agent, deviceId: s.entities.deviceId, ts: s.ts })) });
+    }
+    return allowAll(input, lookup);
+  };
+  await replayStream(stream, undefined, { reviewer: silentReviewer, decider: asking });
+  assert.ok(found.some((f) => f.signals.length > 0), "some searches find something");
+  for (const f of found) assert.ok(f.signals.every((s) => s.agent === f.owner && `device:${s.deviceId}` === f.entity && s.ts <= f.at), f.entity);
+});
+
+test("need_more with Meko (dry): one memory search by the entity, kept in the decision's retrievals", async () => {
+  const asking: Decider = async (input, lookup) => {
+    const device = "deviceId" in input.event ? input.event.deviceId : undefined;
+    const extra = device ? await lookup(`device:${device}`) : [];
+    return { ...(await allowAll(input, lookup)), ...(device && { needMore: { entity: `device:${device}`, found: extra.length } }) };
+  };
+  const meko = { mode: "dry" as const, mcp: dryMeko(), datapacks: { signals: "s", patterns: "p" }, documents: dryDocuments(), wait: async () => {} };
+  const run = await replayStream(stream, meko, { reviewer: silentReviewer, decider: asking });
+  assert.equal(run.status, "ok", run.error ?? "");
+  const asked = run.decisions.filter((d) => d.needMore);
+  assert.ok(asked.length > 0 && asked.some((d) => d.needMore!.found > 0));
+  for (const d of asked) {
+    const search = d.retrievals.find((r) => r.query === d.needMore!.entity.replace(":", " "));
+    assert.ok(search && search.tool === "memory_search" && search.agent === "tripwire:decision", d.eventId);
+  }
 });
